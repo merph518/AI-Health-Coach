@@ -1548,7 +1548,7 @@ function renderChat() {
   if (ci) kids.push(bubble({ role: "assistant", kind: "checkin", slot: ci.slot, text: ci.text }));
   if (S.pending) kids.push(S.pending.el);
   coachEls.list.replaceChildren(...kids);
-  coachEls.ta.placeholder = composerHint();
+  fitHint(composerHint());
   scrollChat();
 }
 // The composer's placeholder answers the last thing the coach said: its question, the
@@ -1558,17 +1558,37 @@ function composerHint() {
   const lastIsBot = S.checkin || S.chat.messages.at(-1)?.role === "assistant";
   const qs = lastIsBot ? (String(last?.text || "").match(/[^.?!\n]*\?/g) || []).map((q) => q.trim().toLowerCase()) : [];
   const meals = ["breakfast", "morning snack", "lunch", "afternoon snack", "dinner", "evening snack", "after dinner"];
-  const asked = meals.filter((m) => qs.some((q) => q.includes(m)));
+  const asked = meals.filter((m) => qs.some((q) => (m === "after dinner" ? q : q.replace("after dinner", "")).includes(m)));
   const weigh = qs.some((q) => /weigh|weight|scale/.test(q));
-  const mealWord = (m) => (m === "after dinner" ? "last night" : m);
-  if (weigh && asked.length) return `Your weight, then ${asked.map(mealWord).join(" and ")}`;
-  if (weigh) return "Your weight, e.g. 184.2";
-  if (asked.length) return `What you had for ${asked.map(mealWord).join(" and ")}`.replace("for last night", "last night");
+  // Kept short so they fit a phone-width box; the CSS adds an ellipsis if one still doesn't.
+  const main = ["breakfast", "lunch", "dinner"].filter((m) => asked.includes(m)).pop() || asked.at(-1)?.replace("after dinner", "last night");
+  if (weigh && main) return `Weight, then ${main}`;
+  if (weigh) return "Your weight";
+  if (main) return main === "last night" ? "What did you have?" : `What was ${main}?`;
   if (qs.length) return "Reply to your coach…";
-  if (lastIsBot && last?.tools?.some((t) => t.startsWith("Logged"))) return "Anything else, or a correction?";
+  if (lastIsBot && last?.tools?.some((t) => t.startsWith("Logged"))) return "Anything else?";
   const meal = defaultMeal().toLowerCase();
-  return meal.includes("snack") ? "Had a snack? Or ask a question" : `What did you have for ${meal}?`;
+  return meal.includes("snack") ? "Had a snack?" : `What's for ${meal}?`;
 }
+// Browsers don't ellipsize a textarea placeholder, so trim it to the box's width here.
+let hintText = "", hintCanvas = null;
+function fitHint(text) {
+  if (text != null) hintText = text;
+  const ta = coachEls?.ta;
+  if (!ta) return;
+  const cs = getComputedStyle(ta);
+  const room = ta.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 2;
+  if (!(room > 0)) { ta.placeholder = hintText; return; }
+  const ctx = (hintCanvas ||= document.createElement("canvas")).getContext("2d");
+  ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  let t = hintText;
+  if (ctx.measureText(t).width > room) {
+    while (t.length > 1 && ctx.measureText(t.trimEnd() + "…").width > room) t = t.slice(0, -1);
+    t = t.trimEnd() + "…";
+  }
+  ta.placeholder = t;
+}
+addEventListener("resize", () => fitHint());
 function errorCopy(code) {
   switch (code) {
     case "rate_limited": return "You've reached your Claude usage limit for now. Try again later, or log by hand on the Today tab.";
