@@ -68,6 +68,8 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .x { border: 0; background: none; color: var(--ink-3); cursor: pointer; width: 28px; height: 28px; border-radius: 8px; font-size: 16px; }
 .x:hover { background: var(--surface-2); color: var(--danger); }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.ctip { cursor: help; }
+.dot.ctip { position: relative; } .dot.ctip::after { content: ""; position: absolute; inset: -9px; }
 .dot.green { background: var(--green); } .dot.yellow { background: var(--yellow); } .dot.orange { background: var(--orange); }
 .colors { display: flex; height: 10px; border-radius: 99px; overflow: hidden; gap: 2px; margin: 8px 0 6px; background: var(--surface-2); }
 .colors > div { height: 100%; }
@@ -533,7 +535,7 @@ function foodList(d, removable) {
     h("div", { class: "meal-head" }, h("span", {}, g.name), h("span", { class: "num muted" }, `${fmt(g.items.reduce((s, i) => s + i.cal, 0))} cal`)),
     h("ul", { class: "items" }, g.items.map((i) => h("li", { title: i.note || null },
       h("span", {},
-        noom && i.color ? h("span", { class: `dot ${i.color}`, title: `${i.color} food`, "aria-label": `${i.color} food` }) : null,
+        noom && i.color ? colorDot(i.color) : null,
         i.qty !== 1 ? h("span", { class: "muted num" }, `${+i.qty.toFixed(2)} × `) : null,
         clean(i.item)),
       h("span", { class: "right" },
@@ -546,6 +548,17 @@ async function removeWithUndo(id) {
     if (removed) toast(`Removed ${clean(removed.item)}.`, { label: "Undo", run: () => mutateDay(date, (d) => { d.items = [...(d.items || []), removed]; }).catch((e) => toast(writeError(e))) });
   } catch (e) { toast(writeError(e)); }
 }
+// What each Noom color means, shown in hover tooltips, on tap, and in the key under the color bar.
+const COLOR_INFO = {
+  green: { label: "Green", hint: "fill up", desc: "Low calorie density: lots of food for few calories. Fill up on these." },
+  yellow: { label: "Yellow", hint: "moderate", desc: "Middle calorie density. Enjoy in moderate portions." },
+  orange: { label: "Orange", hint: "smaller portions", desc: "High calorie density: a lot of calories in a small amount. Still fine, just in smaller portions." },
+};
+const colorTip = (k) => `${COLOR_INFO[k].label} food. ${COLOR_INFO[k].desc}`;
+function colorDot(k) {
+  return h("span", { class: `dot ${k} ctip`, title: colorTip(k), "aria-label": colorTip(k), role: "img", tabindex: "0",
+    onclick: (e) => { e.stopPropagation(); toast(colorTip(k)); } });
+}
 function colorMix(d) {
   const sum = { green: 0, yellow: 0, orange: 0 };
   for (const i of d.items) if (i.color) sum[i.color] += i.cal;
@@ -556,7 +569,9 @@ function colorMix(d) {
     h("div", { class: "colors", role: "img", "aria-label": `Green ${pct("green")}%, yellow ${pct("yellow")}%, orange ${pct("orange")}% of calories` },
       ["green", "yellow", "orange"].filter((k) => sum[k]).map((k) => h("div", { style: `width:${(sum[k] / tot) * 100}%;background:var(--${k})` }))),
     h("div", { class: "legend" }, ["green", "yellow", "orange"].map((k) =>
-      h("span", {}, h("span", { class: `dot ${k}` }), `${k[0].toUpperCase() + k.slice(1)} ${pct(k)}% `, h("span", { class: "faint num" }, `(${fmt(sum[k])})`)))));
+      h("span", { class: "ctip", title: colorTip(k), tabindex: "0", onclick: () => toast(colorTip(k)) }, h("span", { class: `dot ${k}` }), `${COLOR_INFO[k].label} ${pct(k)}% `, h("span", { class: "faint num" }, `(${fmt(sum[k])})`)))),
+    h("p", { class: "small muted", style: "margin-top:6px" },
+      ["green", "yellow", "orange"].map((k) => `${COLOR_INFO[k].label}: ${COLOR_INFO[k].hint}`).join(" · "), ". Based on calories per gram; no color is off-limits."));
 }
 
 // Foods logged before switching to Noom-style have no color. One click asks Claude to
