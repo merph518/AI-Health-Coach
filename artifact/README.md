@@ -31,3 +31,12 @@ Cowork tracker log). The page never contains seed data.
 
 Edit `coach.html`, then ask Claude Code to publish it to the URL above (Artifact publish
 with `url`, so the link and data stay the same).
+
+## Apple Health (Michael only)
+
+Health Auto Export on Michael's iPhone emails a daily CSV to Gmail (from
+automate@mailer.healthyapps.dev). The Claude Code scheduled task
+`import-michael-health-email` (every 2 hours, 8am to 10pm, while the Claude app is open)
+decodes it with `scripts/hae_decode.py`, writes active calories, exercise minutes, steps and
+any missing weigh-in to `people/michael/days/{date}`, then trashes the email. Leah and Eve
+don't use Apple devices and are never touched.
