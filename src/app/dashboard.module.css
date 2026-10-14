@@ -1,0 +1,237 @@
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+  background: var(--surface-2);
+  border-radius: 12px;
+  overflow-x: auto;
+}
+
+.tab {
+  flex: 1;
+  white-space: nowrap;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 12px;
+}
+
+.hero > div {
+  display: grid;
+  gap: 2px;
+}
+
+.hero span {
+  font-size: 13px;
+}
+
+.hero strong {
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.hero small {
+  font-size: 12px;
+}
+
+.bar {
+  height: 8px;
+  margin: 14px 0;
+  border-radius: 4px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.bar > div {
+  height: 100%;
+  border-radius: 4px;
+}
+
+.macros {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.macros > div {
+  display: grid;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+
+.macros strong {
+  font-size: 16px;
+}
+
+.meals {
+  display: grid;
+  gap: 14px;
+}
+
+.mealHead {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-transform: capitalize;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.items {
+  list-style: none;
+}
+
+.items li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 14px;
+}
+
+.items li + li {
+  border-top: 1px solid var(--border);
+}
+
+.day summary {
+  display: flex;
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 500;
+}
+
+.day summary::-webkit-details-marker {
+  display: none;
+}
+
+.table {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.table summary {
+  cursor: pointer;
+  color: var(--ink-2);
+}
+
+.table table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+}
+
+.table th,
+.table td {
+  padding: 4px 6px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+
+.table th:first-child,
+.table td:first-child {
+  text-align: left;
+}
+
+/* Charts */
+
+.chart {
+  position: relative;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.axis {
+  fill: var(--ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ref {
+  stroke: var(--ink-3);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.dot {
+  fill: var(--accent);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.barFill {
+  fill: var(--accent);
+}
+
+.barToday {
+  fill: var(--accent-soft);
+}
+
+.tick {
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.tip {
+  position: absolute;
+  pointer-events: none;
+  display: grid;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  z-index: 2;
+}

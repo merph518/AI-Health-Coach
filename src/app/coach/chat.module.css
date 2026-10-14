@@ -1,0 +1,162 @@
+.wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.user,
+.bot {
+  max-width: 88%;
+  padding: 9px 13px;
+  border-radius: 16px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-bottom-right-radius: 5px;
+  white-space: pre-wrap;
+}
+
+.bot {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 5px;
+}
+
+.bot[data-error] {
+  border-color: var(--danger);
+}
+
+.bot p + p,
+.bot p + ul,
+.bot p + ol,
+.bot ul + p,
+.bot ol + p {
+  margin-top: 8px;
+}
+
+.bot ul,
+.bot ol {
+  padding-left: 20px;
+}
+
+.tag {
+  display: inline-block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.tools span {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.photo {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 10px;
+  margin-bottom: 6px;
+}
+
+.dots::after {
+  content: "…";
+  display: inline-block;
+  animation: pulse 1s ease-in-out infinite;
+  color: var(--ink-3);
+  font-size: 20px;
+  line-height: 1;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.empty {
+  display: grid;
+  gap: 12px;
+  color: var(--ink-2);
+  padding: 8px 0;
+}
+
+.suggest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.suggest button {
+  font-size: 13px;
+}
+
+.composer {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  gap: 8px;
+  padding: 10px 0 max(12px, env(safe-area-inset-bottom));
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.row textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  field-sizing: content;
+  max-height: 140px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+.attached {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.attached img {
+  height: 56px;
+  border-radius: 8px;
+}

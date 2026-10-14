@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `activity_tracking` integer DEFAULT false NOT NULL;
