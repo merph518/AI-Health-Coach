@@ -105,14 +105,12 @@ details.day > summary::-webkit-details-marker { display: none; }
 .mwrap { display: grid; gap: 6px; max-width: 88%; }
 .mwrap.user { justify-self: end; justify-items: end; }
 .mwrap.bot { justify-self: start; justify-items: start; }
-.mline { display: flex; align-items: center; gap: 6px; max-width: 100%; }
-.mwrap.user .mline { flex-direction: row-reverse; }
 .mwrap .msg { max-width: none; min-width: 0; touch-action: pan-y; transition: transform .18s, opacity .18s; }
-.msg-del { flex: none; width: 30px; height: 30px; border: 0; border-radius: 99px; background: transparent; color: var(--ink-3); cursor: pointer; display: grid; place-items: center; padding: 0; visibility: hidden; }
-.msg-del:hover { color: var(--danger); background: var(--surface-2); }
-.mwrap:hover .msg-del, .mwrap.show-del .msg-del, .msg-del:focus-visible { visibility: visible; }
-.msg-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--ink-2); }
-.msg-confirm .btn { font-size: 13px; min-height: 32px; padding: 4px 12px; }
+dialog.confirm { margin: auto; width: min(340px, calc(100vw - 32px)); padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+dialog.confirm::backdrop { background: rgba(0,0,0,.6); }
+dialog.confirm h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+dialog.confirm .quote { font-size: 13px; color: var(--ink-2); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; margin-bottom: 16px; overflow-wrap: anywhere; }
+dialog.confirm .acts { display: flex; justify-content: flex-end; gap: 8px; }
 .typing { color: var(--ink-3); font-style: italic; }
 .daybar { font-size: 13px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; }
 .composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 12px; display: grid; gap: 8px; border-top: 1px solid var(--border); }
@@ -1425,31 +1423,16 @@ function bubble(m) {
     m.tools?.length ? h("div", { class: "chips" }, m.tools.map((t) => h("span", {}, "✓ " + t))) : null,
     formatted(m.text || ""));
 }
-const TRASH_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
-// A saved message: swipe it sideways (touch), or use its trash button (shown on hover, or
-// after a tap on touch screens), then confirm to remove it from the chat log.
+// A saved message: swipe it sideways (touch) and confirm to remove it from the chat log.
 function savedBubble(m) {
   const b = bubble(m);
-  const del = h("button", { class: "msg-del", type: "button", "aria-label": "Delete this message", title: "Delete this message" });
-  del.innerHTML = TRASH_SVG;
-  const line = h("div", { class: "mline" }, b, del);
-  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, line);
-  const ask = () => {
-    if (S.busy || wrap.querySelector(".msg-confirm")) return;
-    const yes = h("button", { class: "btn btn-danger", type: "button" }, "Delete");
-    const no = h("button", { class: "btn", type: "button" }, "Cancel");
-    const bar = h("div", { class: "msg-confirm", role: "group", "aria-label": "Confirm delete" }, h("span", {}, "Are you sure you want to delete this message?"), yes, no);
-    no.onclick = () => { bar.remove(); del.focus(); };
-    yes.onclick = async () => {
-      yes.disabled = no.disabled = true;
-      try { await deleteChatMessage(m); }
-      catch (e) { toast(writeError(e)); bar.remove(); }
-    };
-    wrap.append(bar);
-    yes.focus();
+  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, b);
+  const ask = async () => {
+    if (S.busy || document.querySelector("dialog.confirm")) return;
+    const ok = await confirmPopup("Are you sure you want to delete this message?", snippet(m.text) || (m.photo ? "📷 Photo" : ""), "Delete");
+    if (!ok) return;
+    try { await deleteChatMessage(m); } catch (e) { toast(writeError(e)); }
   };
-  del.onclick = ask;
-  b.addEventListener("click", (e) => { if (!e.target.closest("a") && !matchMedia("(hover: hover)").matches) wrap.classList.toggle("show-del"); });
   // Swipe: follow a horizontal touch drag; past 80px it asks to delete, otherwise springs back.
   let x0 = null, y0 = 0, dx = 0, horiz = false;
   const reset = () => { x0 = null; horiz = false; b.style.transform = ""; b.style.opacity = ""; b.style.transition = ""; };
@@ -1470,6 +1453,25 @@ function savedBubble(m) {
   b.addEventListener("pointerup", () => { const go = horiz && Math.abs(dx) > 80; reset(); if (go) ask(); });
   b.addEventListener("pointercancel", reset);
   return wrap;
+}
+// An alert-style popup centered over the page. Resolves true only on the confirm button;
+// Cancel, Escape or a tap outside resolve false.
+function confirmPopup(title, quote, okLabel) {
+  return new Promise((resolve) => {
+    const yes = h("button", { class: "btn btn-danger", type: "button" }, okLabel);
+    const no = h("button", { class: "btn", type: "button" }, "Cancel");
+    const dlg = h("dialog", { class: "confirm", "aria-label": title },
+      h("h3", {}, title), quote ? h("p", { class: "quote" }, quote) : null, h("div", { class: "acts" }, no, yes));
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; if (dlg.open) dlg.close(); dlg.remove(); resolve(v); };
+    yes.onclick = () => finish(true);
+    no.onclick = () => finish(false);
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) finish(false); });
+    dlg.addEventListener("close", () => finish(false));
+    document.body.append(dlg);
+    dlg.showModal();
+    no.focus();
+  });
 }
 async function deleteChatMessage(m) {
   const same = (x) => x.at === m.at && x.role === m.role && (x.text || "") === (m.text || "");
