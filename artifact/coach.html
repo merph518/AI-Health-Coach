@@ -132,6 +132,7 @@ details.day > summary::-webkit-details-marker { display: none; }
     <section id="v-calories" role="tabpanel" hidden></section>
     <section id="v-history" role="tabpanel" hidden></section>
     <section id="v-settings" role="tabpanel" hidden></section>
+    <section id="v-feedback" role="tabpanel" hidden></section>
   </div>
 </div>
 <div id="toast" class="toast" hidden role="status"></div>
@@ -145,7 +146,7 @@ const MEALS = ["Breakfast", "Morning Snack", "Lunch", "Afternoon Snack", "Dinner
 const MEAL_RANK = { breakfast: 0, "morning snack": 1, lunch: 2, "afternoon snack": 3, dinner: 4, snack: 5, "evening snack": 5, dessert: 5 };
 const mealRank = (m) => MEAL_RANK[String(m).trim().toLowerCase()] ?? 6;
 const CHECKIN_TIMES = ["07:53", "11:53", "17:53"];
-const TABS = [["coach", "Coach"], ["today", "Today"], ["weight", "Weight"], ["calories", "Calories"], ["history", "History"], ["settings", "Settings"]];
+const TABS = [["coach", "Coach"], ["today", "Today"], ["weight", "Weight"], ["calories", "Calories"], ["history", "History"], ["settings", "Settings"], ["feedback", "Feedback"]];
 const LB_PER_KG = 2.2046226218, CM_PER_IN = 2.54, FLOOR = { male: 1500, female: 1320 };
 
 const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
@@ -433,6 +434,11 @@ function choose(pid) {
     S.library = snap.exists && Array.isArray(snap.data().foods) ? snap.data().foods : [];
     renderLibraryList();
   }, err));
+  S.feedback = [];
+  S.unsub.push(S.db.collection("feedback").where("pid", "==", pid).onSnapshot((snap) => {
+    S.feedback = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.at || 0) - (a.at || 0));
+    renderFeedbackList();
+  }, err));
   S.unsub.push(S.db.doc(P("chat", S.today)).onSnapshot((snap) => {
     const d = snap.exists ? snap.data() : {};
     S.chat = { messages: Array.isArray(d.messages) ? d.messages : [], checkins: Array.isArray(d.checkins) ? d.checkins : [] };
@@ -461,8 +467,10 @@ function buildTabs() {
 function setTab(id) {
   S.tab = id;
   [...$("tabs").children].forEach((b, i) => b.setAttribute("aria-selected", String(TABS[i][0] === id)));
+  $("tabs").children[TABS.findIndex((t) => t[0] === id)]?.scrollIntoView({ block: "nearest", inline: "nearest" });
   for (const [t] of TABS) $("v-" + t).hidden = t !== id;
   if (id === "settings") renderSettings();
+  if (id === "feedback") renderFeedback();
   if (id === "coach") requestAnimationFrame(() => scrollChat());
   renderAll();
 }
@@ -864,6 +872,53 @@ function renderSettings() {
     h("label", { class: "field" }, "Coach speed", f.tier),
     h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
     h("div", {}, save)));
+}
+
+// ---------- Feedback ----------
+// Saved to the shared `feedback` collection. Claude Code files each "new" entry as a GitHub
+// issue for Michael and writes back the issue number (see artifact/README.md).
+const KINDS = [["bug", "Something isn't working"], ["idea", "Idea or request"], ["other", "Something else"]];
+let feedbackList = null;
+function renderFeedback() {
+  const v = $("v-feedback");
+  const kind = h("select", {}, KINDS.map(([k, l]) => h("option", { value: k }, l)));
+  const text = h("textarea", { rows: "5", maxlength: "4000", placeholder: "What happened, or what would make this better? The more detail the better." });
+  const send = h("button", { class: "btn btn-primary", type: "submit" }, "Send to Michael");
+  feedbackList = h("div", { class: "stack", style: "gap:10px" });
+  v.replaceChildren(h("div", { class: "stack" },
+    h("form", { class: "card stack", style: "gap:12px", onsubmit: async (e) => {
+      e.preventDefault();
+      const body = text.value.trim();
+      if (body.length < 3) { toast("Write a little about it first."); return; }
+      send.disabled = true;
+      try {
+        await withRetry(() => S.db.collection("feedback").doc(`${S.today}-${S.pid}-${uid()}`).set({
+          pid: S.pid, name: String(S.prof.name || S.pid), kind: kind.value, text: body.slice(0, 4000),
+          at: Date.now(), date: S.today, device: navigator.userAgent.slice(0, 300), status: "new",
+        }));
+        text.value = "";
+        toast("Thanks! Sent to Michael.");
+      } catch (err) { toast(writeError(err)); }
+      send.disabled = false;
+    } },
+      h("h2", {}, "Send feedback"),
+      h("p", { class: "small muted" }, "Found a bug or have an idea? It goes on Michael's to-do list."),
+      h("label", { class: "field" }, "What kind?", kind),
+      h("label", { class: "field" }, "Details", text),
+      h("div", {}, send)),
+    feedbackList));
+  renderFeedbackList();
+}
+function renderFeedbackList() {
+  if (!feedbackList) return;
+  const items = S.feedback || [];
+  feedbackList.replaceChildren(...(items.length ? [h("h2", { style: "margin:4px 0 0" }, "What you've sent")] : []),
+    ...items.map((f) => h("div", { class: "card", style: "padding:12px 14px" },
+      h("div", { class: "small muted", style: "display:flex;justify-content:space-between;gap:8px;margin-bottom:4px" },
+        h("span", {}, `${(KINDS.find((k) => k[0] === f.kind) || KINDS[2])[1]} · ${f.date ? dShort(f.date) : ""}`),
+        h("span", { style: `color:var(${f.status === "done" ? "--good" : f.status === "filed" ? "--accent" : "--ink-3"})` },
+          f.status === "done" ? "Done" : f.status === "filed" ? `On the list${f.issue ? ` (#${f.issue})` : ""}` : "Sent")),
+      h("p", { style: "white-space:pre-wrap;overflow-wrap:anywhere" }, String(f.text || "")))));
 }
 
 // ---------- check-ins ----------
