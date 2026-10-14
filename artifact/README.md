@@ -8,10 +8,12 @@ functions as tools, and the log lives in the artifact's `db`. Leah and Eve use t
 free Claude accounts, invited from the Share menu as Contributors (can use the page and
 write the log, but not edit the page). Only Michael is an Editor.
 
-Capabilities: `{ db: {}, sample: { images: true }, user: {} }`. Never add `artifact` (or
-`self`): without it the page, and so the in-app coach, cannot republish itself. The coach's
-tools only read and write the log and send feedback; app changes go through the Feedback
-tab or the coach's `send_feedback` tool.
+Capabilities: `{ db: {}, sample: { images: true }, user: {}, mcp: { servers: [{ server:
+"Gmail", tools: ["search_threads", "get_message", "trash_message"] }] } }`. Never add
+`artifact` (or `self`): without it the page, and so the in-app coach, cannot republish
+itself. The coach's tools only read and write the log (including removing chat messages),
+send feedback, and, for Michael, import Apple Health from Gmail; app changes go through the
+Feedback tab or the coach's `send_feedback` tool.
 
 ## Data layout (artifact db)
 
@@ -38,5 +40,7 @@ Health Auto Export on Michael's iPhone emails a daily CSV to Gmail (from
 automate@mailer.healthyapps.dev). The Claude Code scheduled task
 `import-michael-health-email` (every 2 hours, 8am to 10pm, while the Claude app is open)
 decodes it with `scripts/hae_decode.py`, writes active calories, exercise minutes, steps and
-any missing weigh-in to `people/michael/days/{date}`, then trashes the email. Leah and Eve
-don't use Apple devices and are never touched.
+any missing weigh-in to `people/michael/days/{date}`, then trashes the email. Michael can
+also ask the coach to import it: the `import_health_data` tool does the same through his own
+Gmail connector (the page asks for Gmail access on first use). The tool only exists for
+Michael; Leah and Eve don't use Apple devices and are never touched.

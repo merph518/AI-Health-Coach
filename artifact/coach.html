@@ -107,8 +107,6 @@ details.day > summary::-webkit-details-marker { display: none; }
 .composer textarea { flex: 1; min-width: 0; resize: none; font-size: 16px; border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px; background: var(--surface); max-height: 160px; min-height: 42px; }
 .attached { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .attached img { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; }
-.suggest { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.suggest .btn { font-size: 13px; min-height: 34px; padding: 6px 10px; }
 .notice { padding: 10px 12px; border-radius: 12px; background: var(--surface-2); font-size: 13px; color: var(--ink-2); }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--surface-2); color: var(--ink); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 14px; font-size: 14px; display: flex; gap: 12px; align-items: center; z-index: 10; max-width: calc(100% - 32px); }
 .toast button { background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer; }
@@ -370,6 +368,8 @@ async function boot() {
   }
   S.canWrite = user ? await user.can("data.write").catch(() => null) : null;
   if (sample) S.sampleLimits = await sample.limits().catch(() => null);
+  // Gmail is only used for Michael's Apple Health import; nothing calls it until he asks.
+  claude.use("mcp").then((m) => { S.mcp = !!m; }, () => {});
 
   db.collection("people").onSnapshot((snap) => {
     S.people = {};
@@ -990,6 +990,10 @@ THE APP ITSELF
 - When they report a problem with the app or ask for a change or new feature, offer to send it to Michael as feedback. Once they say yes (or if they asked you to send it), call send_feedback with a clear summary in their words, then tell them it's on Michael's list and they can follow it on the Feedback tab.
 - Only send what they asked to send. Food, weight and coaching questions are not feedback.
 
+THE CHAT LOG
+- When they ask to remove messages from this chat, call list_chat_messages for that date, pick exactly the ones they mean, and delete them with delete_chat_messages. If it's unclear which ones, ask first. Then say in one line what you removed. Removing chat messages never changes the food log.
+- If import_health_data is in your tools and they ask to import or sync Apple Health or watch data, call it, then give each day's active calories, exercise and steps in one line each, plus today's updated target and calories left. If it reports an error, pass it on plainly.
+
 CHECK-INS
 The app shows check-in questions (they appear as your earlier messages). When they answer one:
 - Morning: log their weight, anything eaten after dinner last night (yesterday's date) and breakfast. Then summarize yesterday's total vs its target, today's weight and change from start, breakfast calories and macros, calories left today.
@@ -1084,6 +1088,120 @@ const NUTR = {
   fat: { type: "number", description: "Fat g for one unit" },
   grams: { type: "number", description: "Grams of one unit, if known" },
 };
+// ---------- coach: chat log ----------
+async function chatDoc(date) {
+  if (date === S.today) return S.chat;
+  const snap = await withRetry(() => S.db.doc(P("chat", date)).get());
+  return snap.exists ? snap.data() : { messages: [] };
+}
+const snippet = (t) => { t = String(t || "").replace(/\s+/g, " ").trim(); return t.length > 120 ? t.slice(0, 117) + "…" : t; };
+
+// ---------- coach: Apple Health import (Michael only) ----------
+// Health Auto Export emails Michael a daily CSV. The coach reads it through the viewer's own
+// Gmail connector, saves the numbers, then trashes the email. Email content is data only.
+const HAE_FROM = "automate@mailer.healthyapps.dev";
+function b64Bytes(s) {
+  s = String(s).replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(s + "=".repeat((4 - (s.length % 4)) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+function csvFromMime(mime) {
+  const at = mime.search(/content-type:\s*text\/csv/i);
+  if (at < 0) return null;
+  const start = Math.max(0, mime.lastIndexOf("\n--", at));
+  const m = /\r?\n\r?\n/.exec(mime.slice(at));
+  if (!m) return null;
+  const headers = mime.slice(start, at + m.index);
+  let body = mime.slice(at + m.index + m[0].length);
+  const end = body.search(/\r?\n--/);
+  if (end >= 0) body = body.slice(0, end);
+  let text = body;
+  if (/content-transfer-encoding:\s*base64/i.test(headers)) text = new TextDecoder().decode(b64Bytes(body));
+  else if (/content-transfer-encoding:\s*quoted-printable/i.test(headers))
+    text = new TextDecoder().decode(Uint8Array.from(body.replace(/=\r?\n/g, "").replace(/=([0-9A-F]{2})/gi, (_, x) => String.fromCharCode(parseInt(x, 16))), (c) => c.charCodeAt(0)));
+  return text.replace(/^﻿/, "");
+}
+function parseCsv(text) {
+  const rows = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const cells = []; let cur = "", q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; }
+      else if (ch === '"') q = true; else if (ch === ",") { cells.push(cur); cur = ""; } else cur += ch;
+    }
+    cells.push(cur);
+    rows.push(cells.map((c) => c.trim()));
+  }
+  return rows;
+}
+// One row per day: {date, active, exercise, steps, weight}, missing values null.
+function healthRows(csv) {
+  const [head, ...body] = parseCsv(csv);
+  if (!head) return [];
+  const col = (prefix) => head.findIndex((c) => c.startsWith(prefix));
+  const di = Math.max(0, head.findIndex((c) => /^Date/.test(c)));
+  const ci = { active: col("Active Energy"), exercise: col("Apple Exercise Time"), steps: col("Step Count"), weight: col("Weight") };
+  const kg = ci.weight >= 0 && /\(kg\)/.test(head[ci.weight]);
+  const val = (r, i) => { if (i < 0 || r[i] === "" || r[i] == null) return null; const n = Number(r[i]); return Number.isFinite(n) ? n : null; };
+  return body.map((r) => {
+    const date = String(r[di] || "").slice(0, 10);
+    const w = val(r, ci.weight);
+    return { date, active: val(r, ci.active), exercise: val(r, ci.exercise), steps: val(r, ci.steps), weight: w == null ? null : +(kg ? w * 2.20462 : w).toFixed(1) };
+  }).filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.date));
+}
+function gmailError(e) {
+  switch (e?.code) {
+    case "server_not_connected": case "server_not_found": case "selection_required":
+      return "Gmail isn't connected for this page. Add or pick Gmail in claude.ai Settings, Connectors, then try again.";
+    case "needs_reauth": return "Gmail needs to be reconnected in claude.ai Settings, Connectors.";
+    case "not_in_manifest": case "approval_required": case "consent_required":
+      return "Gmail access wasn't allowed for this page. Allow it when Claude asks, or in the page's Permissions menu.";
+    case "blocked_by_policy": return "Gmail is blocked for this account.";
+    case "server_unavailable": case "rate_limited": return "Gmail isn't answering right now. Try again in a minute.";
+    case "not_granted": case "capability_disabled": case "capability_removed": return "Gmail can't be reached from this view of the page.";
+    default: return "Gmail returned an error: " + String(e?.message || e?.code || "unknown").slice(0, 200);
+  }
+}
+async function importHealth(chip) {
+  if (S.pid !== "michael") throw new ToolErr("Apple Health import is only set up for Michael.");
+  const mcp = await claude.use("mcp");
+  if (!mcp) throw new ToolErr("Gmail can't be reached from this view of the page.");
+  const call = (tool, input) => mcp.callTool("Gmail", tool, input, { cache: false }).then((r) => r.payload, (e) => { throw new ToolErr(gmailError(e)); });
+  const found = await call("search_threads", { query: `from:${HAE_FROM} in:inbox`, pageSize: 20 });
+  const msgs = (found?.threads || []).flatMap((t) => t.messages || [])
+    .filter((m) => m?.id && String(m.sender || "").toLowerCase().includes(HAE_FROM) && (!m.labelIds || m.labelIds.includes("INBOX")))
+    .sort((a, b) => Number(a.internalDate || 0) - Number(b.internalDate || 0));
+  if (!msgs.length) { chip("Checked for Apple Health emails"); return { emails: 0, note: "No Health Auto Export emails in the inbox." }; }
+  const byDate = {}, done = [], skipped = [];
+  for (const m of msgs) {
+    const got = await call("get_message", { messageId: m.id, messageFormat: "RAW" });
+    let rows = [];
+    try { const csv = csvFromMime(new TextDecoder().decode(b64Bytes(got?.raw || ""))); rows = csv ? healthRows(csv) : []; } catch { rows = []; }
+    if (!rows.length) { skipped.push(m.id); continue; }
+    for (const r of rows) byDate[r.date] = r; // newer emails win for the same day
+    done.push(m.id);
+  }
+  const saved = [];
+  for (const r of Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))) {
+    let weighed = false;
+    await mutateDay(r.date, (d) => {
+      if (r.active != null) d.active = Math.round(r.active);
+      if (r.exercise != null) d.exercise = Math.round(r.exercise);
+      if (r.steps != null) d.steps = Math.round(r.steps);
+      d.partial = r.date === S.today;
+      if (r.weight != null && d.weight == null) { d.weight = r.weight; weighed = true; }
+    });
+    saved.push({ date: r.date, active_kcal: r.active == null ? null : Math.round(r.active), exercise_min: r.exercise == null ? null : Math.round(r.exercise),
+      steps: r.steps == null ? null : Math.round(r.steps), partial: r.date === S.today, ...(weighed ? { weight_lb_added: r.weight } : {}) });
+  }
+  let trashed = 0;
+  for (const id of done) { try { await mcp.callTool("Gmail", "trash_message", { messageId: id }, { cache: false }); trashed++; } catch {} }
+  chip(`Imported Apple Health (${saved.length} day${saved.length === 1 ? "" : "s"})`);
+  return { emails: msgs.length, imported: saved, emails_trashed: trashed, unreadable_emails: skipped.length, today: daySummary(S.today) };
+}
+
 // These tools are everything the coach can do. None of them touches the page or its code, and
 // the page never declares the `artifact` capability, so no chat, by anyone, can republish it.
 function coachTools(chip) {
@@ -1207,7 +1325,43 @@ function coachTools(chip) {
         return { sent: true };
       },
     },
+    {
+      name: "list_chat_messages",
+      description: "List the messages in this chat log for a date (oldest first), each with its 'at' id, role and a snippet. Use before delete_chat_messages.",
+      inputSchema: { type: "object", required: ["date"], properties: { date: DATE } },
+      async execute(a) {
+        const date = vDate(a.date);
+        const c = await chatDoc(date);
+        chip("Checked the chat log");
+        return { date, messages: (c.messages || []).map((m) => ({ at: m.at, role: m.role === "user" ? "person" : "coach", ...(m.kind ? { kind: m.kind } : {}), ...(m.photo ? { photo: true } : {}), text: snippet(m.text) })) };
+      },
+    },
+    {
+      name: "delete_chat_messages",
+      description: "Remove messages from this person's chat log, by their 'at' ids from list_chat_messages. Only when the person asks. Does not touch the food log.",
+      inputSchema: { type: "object", required: ["date", "at"], properties: { date: DATE, at: { type: "array", items: { type: "number" }, description: "The 'at' ids of the messages to remove" } } },
+      async execute(a) {
+        const date = vDate(a.date);
+        const ids = new Set((Array.isArray(a.at) ? a.at : []).map(Number).filter(Number.isFinite));
+        if (!ids.size) throw new ToolErr("at is empty");
+        const removed = await mutateChat(date, (c) => {
+          const before = c.messages.length;
+          c.messages = c.messages.filter((m) => !ids.has(Number(m.at)));
+          const n = before - c.messages.length;
+          return n ? n : false;
+        });
+        if (!removed) throw new ToolErr("no messages with those ids on that date");
+        chip(`Removed ${removed} message${removed === 1 ? "" : "s"} from the chat`);
+        return { date, removed };
+      },
+    },
   ];
+  if (S.pid === "michael" && S.mcp) tools.push({
+    name: "import_health_data",
+    description: "Import Apple Health numbers (active calories, exercise minutes, steps, a missing weigh-in) from the Health Auto Export emails in Gmail, then trash those emails. Use when Michael asks to import or sync his health or watch data.",
+    inputSchema: { type: "object", properties: {} },
+    execute() { return importHealth(chip); },
+  });
   if (S.prof.activity) tools.push({
     name: "log_activity",
     description: "Record Apple Watch numbers for a date (e.g. from a screenshot). Same-day numbers are partial; replace them later with the full day.",
@@ -1237,10 +1391,15 @@ function formatted(text) {
   }
   return frag;
 }
+// Saved check-ins carry their slot time; older ones fall back to the time they were saved.
+function checkinLabel(m) {
+  const t = m.slot || (m.at ? clockIn(tz(), new Date(m.at)) : "");
+  return t ? `${t < "10:00" ? "Morning" : t < "15:00" ? "Afternoon" : "Evening"} Check-In` : "Check-In";
+}
 function bubble(m) {
   if (m.role === "user") return h("div", { class: "msg user" }, m.photo ? h("span", { class: "ph" }, "📷 Photo") : null, m.text ? h("p", {}, m.text) : null);
   return h("div", { class: "msg bot" + (m.error ? " err" : "") },
-    m.kind === "checkin" ? h("span", { class: "tag" }, "Check-in") : null,
+    m.kind === "checkin" ? h("span", { class: "tag" }, checkinLabel(m)) : null,
     m.tools?.length ? h("div", { class: "chips" }, m.tools.map((t) => h("span", {}, "✓ " + t))) : null,
     formatted(m.text || ""));
 }
@@ -1255,7 +1414,6 @@ function buildCoach() {
   const stop = h("button", { class: "btn", type: "button", hidden: true, onclick: () => S.ctl?.abort() }, "Stop");
   const attached = h("div", { class: "attached", hidden: true });
   const note = h("p", { class: "small muted", hidden: true });
-  const sugg = h("div", { class: "suggest", style: "margin-top:0", hidden: true });
   const imgs = S.sampleLimits?.images;
   if (!imgs) cam.hidden = true; else file.accept = imgs.mediaTypes.join(",");
   file.addEventListener("change", () => {
@@ -1269,19 +1427,19 @@ function buildCoach() {
       h("button", { class: "btn", type: "button", onclick: () => { S.photo = null; attached.hidden = true; URL.revokeObjectURL(url); } }, "Remove"));
     attached.hidden = false;
   });
-  ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(160, ta.scrollHeight) + "px"; renderSuggestions(); });
+  ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(160, ta.scrollHeight) + "px"; });
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(hover: hover)").matches) { e.preventDefault(); form.requestSubmit(); }
   });
   const form = h("form", { class: "composer", onsubmit: (e) => { e.preventDefault(); sendMessage(); } },
-    note, sugg, attached, h("div", { class: "line" }, cam, file, ta, stop, send));
+    note, attached, h("div", { class: "line" }, cam, file, ta, stop, send));
   if (!S.sample) {
     note.textContent = "The coach isn't available in this view. You can still log on the Today tab.";
     note.hidden = false;
     ta.disabled = true; send.disabled = true; cam.disabled = true;
   }
   v.replaceChildren(daybar, list, form);
-  coachEls = { list, daybar, ta, send, stop, cam, attached, note, sugg };
+  coachEls = { list, daybar, ta, send, stop, cam, attached, note };
   renderDaybar();
   renderChat();
 }
@@ -1306,63 +1464,29 @@ function renderChat() {
   }
   const ci = !S.busy && composeCheckin();
   S.checkin = ci || null;
-  if (ci) kids.push(bubble({ role: "assistant", kind: "checkin", text: ci.text }));
+  if (ci) kids.push(bubble({ role: "assistant", kind: "checkin", slot: ci.slot, text: ci.text }));
   if (S.pending) kids.push(S.pending.el);
   coachEls.list.replaceChildren(...kids);
-  renderSuggestions();
+  coachEls.ta.placeholder = composerHint();
   scrollChat();
 }
-// Shortcuts drawn from this person's own log: today's missing weigh-in, the meal that's
-// due (yesterday's version and their usual items), and a question that fits the day.
-function suggestions() {
-  const out = [];
-  const d = dayView(S.today), y = dayView(addDays(S.today, -1));
-  const now = clockIn(tz());
-  if (d.weight == null && now < "12:00") {
-    const lw = latestWeight();
-    out.push({ label: lw ? `Today's weight (last ${lw.weight})` : "Log my weight", text: "I weighed " });
-  }
-  // Follow the check-in on screen when there is one, so the shortcuts answer its question.
-  const slot = S.checkin?.slot;
-  const meal = slot ? (slot < "10:00" ? "Breakfast" : slot < "15:00" ? "Lunch" : "Dinner") : defaultMeal();
-  if (!d.items.some((i) => i.meal === meal)) {
-    const lower = meal.toLowerCase();
-    const yItems = y.items.filter((i) => i.meal === meal);
-    if (yItems.length) out.push({ label: `Same ${lower} as yesterday`, text: `Same ${lower} as yesterday: ${yItems.map((i) => (i.qty !== 1 ? `${+i.qty.toFixed(2)} x ` : "") + i.item).join("; ")}` });
-    const seen = new Set(yItems.map((i) => clean(i.item).toLowerCase()));
-    const counts = new Map();
-    for (const day of allDays().filter((x) => x.date < S.today && x.date >= addDays(S.today, -28)))
-      for (const i of day.items) {
-        if (i.meal !== meal || i.cal < 120) continue;
-        const k = clean(i.item).toLowerCase();
-        if (seen.has(k)) continue;
-        const c = counts.get(k) || { name: clean(i.item), item: i.item, n: 0 };
-        c.n++;
-        counts.set(k, c);
-      }
-    for (const c of [...counts.values()].filter((c) => c.n >= 2).sort((a, b) => b.n - a.n).slice(0, 2))
-      out.push({ label: `${c.name.length > 32 ? c.name.slice(0, 30) + "…" : c.name} for ${lower}`, text: `I had ${c.item} for ${lower}` });
-  }
-  if (d.target != null && d.items.length) {
-    const left = d.target - d.cal;
-    if (left > 200 && now >= "15:00" && !d.items.some((i) => i.meal === "Dinner")) out.push({ label: `Dinner idea for ${fmt(left)} cal`, text: `What's a good dinner with about ${fmt(left)} calories left?` });
-    else if (left > 150 && now >= "19:00") out.push({ label: `Snack idea for ${fmt(left)} cal`, text: `What's a good evening snack with ${fmt(left)} calories left?` });
-    else if (left < 0) out.push({ label: "I'm over today, now what?", text: `I'm ${fmt(-left)} over today. What should I do for the rest of the day?` });
-  }
-  if (allDays().filter((x) => x.date < S.today && x.items.length).length >= 3) out.push({ label: "How's my week going?", text: "How am I doing this week?" });
-  return out.slice(0, 4);
-}
-function renderSuggestions() {
-  const E = coachEls;
-  if (!E || !S.sample) return;
-  const list = S.busy || E.ta.value.trim() ? [] : suggestions();
-  E.sugg.replaceChildren(...list.map((x) => h("button", { class: "btn", type: "button", onclick: () => {
-    E.ta.value = x.text;
-    E.ta.focus();
-    E.ta.setSelectionRange(x.text.length, x.text.length);
-    E.ta.dispatchEvent(new Event("input"));
-  } }, x.label)));
-  E.sugg.hidden = !list.length;
+// The composer's placeholder answers the last thing the coach said: its question, the
+// check-in on screen, or else the meal that's due.
+function composerHint() {
+  const last = S.checkin || [...S.chat.messages].reverse().find((m) => m.role === "assistant" && !m.error);
+  const lastIsBot = S.checkin || S.chat.messages.at(-1)?.role === "assistant";
+  const qs = lastIsBot ? (String(last?.text || "").match(/[^.?!\n]*\?/g) || []).map((q) => q.trim().toLowerCase()) : [];
+  const meals = ["breakfast", "morning snack", "lunch", "afternoon snack", "dinner", "evening snack", "after dinner"];
+  const asked = meals.filter((m) => qs.some((q) => q.includes(m)));
+  const weigh = qs.some((q) => /weigh|weight|scale/.test(q));
+  const mealWord = (m) => (m === "after dinner" ? "last night" : m);
+  if (weigh && asked.length) return `Your weight, then ${asked.map(mealWord).join(" and ")}`;
+  if (weigh) return "Your weight, e.g. 184.2";
+  if (asked.length) return `What you had for ${asked.map(mealWord).join(" and ")}`.replace("for last night", "last night");
+  if (qs.length) return "Reply to your coach…";
+  if (lastIsBot && last?.tools?.some((t) => t.startsWith("Logged"))) return "Anything else, or a correction?";
+  const meal = defaultMeal().toLowerCase();
+  return meal.includes("snack") ? "Had a snack? Or ask a question" : `What did you have for ${meal}?`;
 }
 function errorCopy(code) {
   switch (code) {
@@ -1400,7 +1524,7 @@ async function sendMessage() {
   S.photo = null; E.attached.hidden = true;
   try {
     await mutateChat(date, (c) => {
-      if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", text: checkin.text, at: Date.now() - 1 }); }
+      if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", slot: checkin.slot, text: checkin.text, at: Date.now() - 1 }); }
       c.messages.push(userMsg);
       if (c.messages.length > 200) c.messages.splice(0, c.messages.length - 200);
     });
