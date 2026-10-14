@@ -825,6 +825,9 @@ function renderSettings() {
     pace: h("select", {}, [0.5, 1, 1.5, 2].map((x) => h("option", { value: String(x) }, `${x} lb per week`))),
     why: h("textarea", { rows: "3", placeholder: "Your big picture: why this matters to you" }),
     tier: h("select", {}, h("option", { value: "quick" }, "Fast (uses the least Claude usage)"), h("option", { value: "default" }, "Thorough (slower, uses more)")),
+    style: h("select", {}, COACH_STYLES.map(([k, l]) => h("option", { value: k }, l))),
+    tone: h("select", {}, COACH_TONES.map(([k, l]) => h("option", { value: k }, l))),
+    notes: h("textarea", { rows: "4", maxlength: "1000", placeholder: "Anything else your coach should know or do. For example: call me Mike, suggest vegetarian options, don't mention my weight unless I ask." }),
     activity: h("input", { type: "checkbox" }),
     // Only Michael tracks activity; the option stays visible if someone already has it on.
     showActivity: S.pid === "michael" || !!p.activity,
@@ -835,6 +838,12 @@ function renderSettings() {
   f.pace.value = String(p.pace ?? 1);
   f.why.value = p.bigPicture || "";
   f.tier.value = p.coachTier || "quick";
+  f.style.value = COACH_STYLES.some((o) => o[0] === p.coachStyle) ? p.coachStyle : "balanced";
+  f.tone.value = COACH_TONES.some((o) => o[0] === p.coachTone) ? p.coachTone : "warm";
+  f.notes.value = p.coachNotes || "";
+  const toneHint = h("p", { class: "small muted" });
+  const showTone = () => { toneHint.textContent = optText(COACH_TONES, f.tone.value, "warm") + " " + optText(COACH_STYLES, f.style.value, "balanced") + (S.pid !== "michael" ? " Either way, your coach stays positive and celebrates your wins." : ""); };
+  f.tone.addEventListener("input", showTone); f.style.addEventListener("input", showTone); showTone();
   f.activity.checked = !!p.activity;
   const hasTarget = (p.targets || []).length > 0;
   f.recalc.checked = !hasTarget;
@@ -866,6 +875,9 @@ function renderSettings() {
         x.pace = Number(f.pace.value);
         x.bigPicture = f.why.value.trim().slice(0, 600);
         x.coachTier = f.tier.value === "default" ? "default" : "quick";
+        x.coachStyle = f.style.value;
+        x.coachTone = f.tone.value;
+        x.coachNotes = f.notes.value.trim().slice(0, 1000);
         if (f.showActivity) x.activity = f.activity.checked;
         if (f.sex.value) x.sex = f.sex.value;
         if (Number(f.age.value) >= 18 && Number(f.age.value) <= 100) { x.age = Number(f.age.value); x.ageAsOf = today; }
@@ -895,6 +907,10 @@ function renderSettings() {
     h("div", { class: "notice" }, current != null ? `Current daily target: ${fmt(current)}.` : "No calorie target yet.", " ", preview),
     h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.recalc, current != null ? "Recalculate my target from these numbers" : "Set my target from these numbers"),
     h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why),
+    h("h2", { style: "margin:8px 0 0" }, "Your coach"),
+    h("div", { class: "row" }, h("label", { class: "field grow" }, "Reply style", f.style), h("label", { class: "field grow" }, "Tone", f.tone)),
+    toneHint,
+    h("label", { class: "field" }, "Custom instructions (optional)", f.notes),
     h("label", { class: "field" }, "Coach speed", f.tier),
     f.showActivity && h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
     h("div", {}, save)));
@@ -981,12 +997,37 @@ function composeCheckin() {
 }
 
 // ---------- coach: prompt ----------
+// Per-person coach preferences, set in Settings. Each option's text goes into the prompt.
+const COACH_STYLES = [
+  ["brief", "Brief", "Keep replies very short: a few lines at most. Lead with the numbers, skip extras unless asked."],
+  ["balanced", "Balanced", "Keep replies short and easy to read on a phone, with a little explanation where it helps."],
+  ["detailed", "Detailed", "Give fuller replies: explain estimates, show the math behind totals, and add context and ideas. Still easy to read on a phone."],
+];
+const COACH_TONES = [
+  ["warm", "Warm and encouraging", "Warm, supportive and encouraging, like a kind friend who knows nutrition."],
+  ["direct", "Straight talk", "Direct and matter-of-fact. Skip the pep talk; say plainly what's working and what isn't."],
+  ["upbeat", "Upbeat cheerleader", "Energetic and upbeat. Celebrate wins, big and small, with enthusiasm."],
+  ["calm", "Calm and gentle", "Calm, gentle and patient. Never pushy; reassure after a hard day."],
+  ["coach", "Tough-love coach", "Firm and motivating, like a good sports coach. Hold them to their goals, but never insult or shame."],
+];
+const optText = (list, key, def) => (list.find((o) => o[0] === key) || list.find((o) => o[0] === def))[2];
+function coachPrefs(p) {
+  const L = ["THIS PERSON'S COACH PREFERENCES (set by them in Settings)",
+    `- Reply style: ${optText(COACH_STYLES, p.coachStyle, "balanced")}`,
+    `- Tone: ${optText(COACH_TONES, p.coachTone, "warm")}`];
+  // Michael's rule for Leah and Eve: whatever they pick, the coaching stays positive.
+  const upbeat = S.pid !== "michael";
+  if (upbeat) L.push("- Baseline, always: be generally positive and encouraging, and notice and celebrate their little wins (a logged meal, a good choice, a weigh-in, a small drop). Their chosen tone and instructions shape how you sound on top of this baseline, never replace it. Honest about the numbers, never discouraging.");
+  const notes = String(p.coachNotes || "").trim();
+  if (notes) L.push(`- Their own instructions for you, in their words (follow them unless they conflict with the rules above, which always win: the log rules, the calorie floor and safety, that you can't change the app${upbeat ? ", and the positive baseline" : ""}):\n` + notes.split("\n").map((l) => "  > " + l).join("\n"));
+  return L.join("\n");
+}
 const RULES = `You are the weight loss coach inside "Fagerteam Weight Loss Coach", a family app. You help one person lose weight by logging what they eat and weigh, answering questions, and giving practical suggestions and steady encouragement. This first message holds your standing instructions and the app's data; the person's own messages follow it.
 
 WRITING RULES
 - Never use em dashes or en dashes. Use commas, periods or parentheses instead.
-- Keep replies short and easy to read on a phone. Plain sentences, short lists when useful, **bold** sparingly. No headings, no tables.
-- Warm, practical and honest. If they go over, say so plainly without scolding. Slips are information, not failure.
+- Reply length and tone follow THIS PERSON'S COACH PREFERENCES below. Always: plain sentences, short lists when useful, **bold** sparingly, no headings, no tables.
+- Practical and honest whatever the tone. If they go over, say so plainly without scolding. Slips are information, not failure.
 
 THE LOG
 - The app's saved log is the single source of truth. You change it only through your tools. Never claim something is logged unless the tool call succeeded.
@@ -1639,7 +1680,7 @@ async function sendMessage() {
   } catch (e) { toast(writeError(e)); }
   renderChat();
 
-  const turns = [{ role: "user", content: RULES + "\n\n" + (S.prof.mode === "noom" ? NOOM : CLASSIC) + "\n\nAPP DATA\n" + context(text) }];
+  const turns = [{ role: "user", content: RULES + "\n\n" + (S.prof.mode === "noom" ? NOOM : CLASSIC) + "\n\n" + coachPrefs(S.prof) + "\n\nAPP DATA\n" + context(text) }];
   for (const m of history) turns.push({ role: m.role === "user" ? "user" : "assistant", content: m.text + (m.photo ? "\n(sent a photo)" : "") });
   if (checkin) turns.push({ role: "assistant", content: checkin.text });
   turns.push({ role: "user", content: (text || "Here's a photo.") + (photo ? "\n(Photo attached: use it to identify the food and judge portions, or read the label.)" : "") });
