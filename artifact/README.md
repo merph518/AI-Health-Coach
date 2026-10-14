@@ -19,7 +19,9 @@ Feedback tab or the coach's `send_feedback` tool.
 
 - `people/{michael|leah|eve}`: profile (name, mode noom|classic, activity, eatBackPct,
   timezone, sex, age, ageAsOf, heightIn, startWeight, startDate, goalWeight, pace,
-  bigPicture, coachTier, targets: [{from, kcal, basis}])
+  bigPicture, coachTier, coachStyle brief|balanced|detailed, coachTone warm|direct|upbeat|calm|coach,
+  coachNotes (custom instructions), targets: [{from, kcal, basis}]). For Leah and Eve the
+  prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
 - `people/{pid}/days/{YYYY-MM-DD}`: items [{id, meal, item, qty, kcal, p, c, f, grams?,
   color?, note?}] (nutrition per unit), weight, active, steps, partial
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
