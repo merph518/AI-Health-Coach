@@ -816,7 +816,7 @@ function renderSettings() {
   const preview = h("p", { class: "small muted" });
   const compute = () => {
     const sex = f.sex.value, age = Number(f.age.value), inches = Number(f.ft.value) * 12 + Number(f.inch.value || 0), lb = lw?.weight ?? Number(f.weight.value), pace = Number(f.pace.value);
-    if (!sex || !(age >= 18) || !(inches >= 48) || !(lb >= 60)) return null;
+    if (!sex || !(age >= 18 && age <= 100) || !(inches >= 48 && inches <= 96) || !(lb >= 60 && lb <= 800)) return null;
     return { sex, age, inches, lb, pace, ...dailyTarget({ sex, lb, inches, age, pace }) };
   };
   const update = () => {
@@ -829,10 +829,10 @@ function renderSettings() {
   update();
   const save = h("button", { class: "btn btn-primary", type: "submit" }, "Save");
   const current = baseFor(S.today);
-  v.replaceChildren(h("form", { class: "card stack", onsubmit: async (e) => {
+  v.replaceChildren(h("form", { class: "card stack", novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
+    // Save whatever is filled in; the calorie target waits until the formula has what it needs.
     const c = compute();
-    if (f.recalc.checked && !c) { toast("Fill in sex, age, height and weight first."); return; }
     save.disabled = true;
     try {
       const today = S.today;
@@ -843,19 +843,20 @@ function renderSettings() {
         x.coachTier = f.tier.value === "default" ? "default" : "quick";
         x.activity = f.activity.checked;
         if (f.sex.value) x.sex = f.sex.value;
-        if (Number(f.age.value) >= 18) { x.age = Number(f.age.value); x.ageAsOf = today; }
+        if (Number(f.age.value) >= 18 && Number(f.age.value) <= 100) { x.age = Number(f.age.value); x.ageAsOf = today; }
         const inches = Number(f.ft.value) * 12 + Number(f.inch.value || 0);
-        if (inches >= 48) x.heightIn = inches;
-        x.goalWeight = Number(f.goal.value) || null;
-        if (Number(f.weight.value) >= 60) { x.startWeight = Number(f.weight.value); x.startDate ||= today; }
+        if (inches >= 48 && inches <= 96) x.heightIn = inches;
+        const goal = Number(f.goal.value);
+        x.goalWeight = goal >= 60 && goal <= 800 ? goal : null;
+        if (Number(f.weight.value) >= 60 && Number(f.weight.value) <= 800) { x.startWeight = Number(f.weight.value); x.startDate ||= today; }
         if (f.recalc.checked && c) {
           const t = (x.targets || []).filter((t) => t.from !== today);
           t.push({ from: today, kcal: c.target, basis: `Mifflin-St Jeor: ${c.sex}, ${c.lb} lb, ${c.inches} in, age ${c.age}, sedentary x1.2 = ${fmt(c.tdee)} maintenance, minus ${c.pace} lb/week${c.floored ? ", held at the floor" : ""}.` });
           x.targets = t.sort((a, b) => a.from.localeCompare(b.from));
         }
       });
-      if (Number(f.weight.value) >= 60 && !S.days[today]?.weight && !lw) await setWeight(today, Number(f.weight.value));
-      toast("Saved.");
+      if (Number(f.weight.value) >= 60 && Number(f.weight.value) <= 800 && !S.days[today]?.weight && !lw) await setWeight(today, Number(f.weight.value));
+      toast(f.recalc.checked && !c ? "Saved. Add sex, age, height and weight to set a calorie target." : "Saved.");
       setTimeout(() => { renderSettings(); buildTodayForms(); }, 300);
     } catch (err) { toast(writeError(err)); }
     save.disabled = false;
