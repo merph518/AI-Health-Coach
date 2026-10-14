@@ -27,6 +27,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn-primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #1b1b1b; }
+.btn-danger:hover { background: var(--danger); filter: brightness(1.08); }
 .field { display: grid; gap: 4px; font-size: 13px; color: var(--ink-2); }
 .field input, .field select, .field textarea { font-size: 16px; color: var(--ink); background-color: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; min-height: 40px; width: 100%; }
 /* Own caret so it sits 10px in from the right edge (the native one hugs the border). */
@@ -35,10 +37,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 34px !import
 .row > .grow { flex: 1 1 160px; }
 h2 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
 
-header.top { border-bottom: 3px solid var(--accent); margin: 0 -16px; padding-left: 16px !important; padding-right: 16px !important; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 10px; }
+header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 3px solid var(--accent); margin: 0 -16px; padding-left: 16px !important; padding-right: 16px !important; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 10px; }
 .brand { color: var(--accent); font-weight: 700; font-size: 17px; letter-spacing: -.01em; }
 .who { display: inline-flex; align-items: center; gap: 6px; }
-.tabs { margin-top: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px 16px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.tabs { position: sticky; top: var(--hdr-h, 64px); z-index: 19; background: var(--bg); margin-top: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px 16px; padding: 0 16px; border-bottom: 1px solid var(--border); }
 .tabs::-webkit-scrollbar { display: none; }
 .tab { border: 0; background: none; padding: 10px 10px 12px; cursor: pointer; color: var(--ink-2); border-bottom: 2px solid transparent; white-space: nowrap; }
 .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
@@ -100,6 +102,17 @@ details.day > summary::-webkit-details-marker { display: none; }
 .msg .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .msg .chips span { font-size: 12px; color: var(--good); background: var(--surface-2); border-radius: 99px; padding: 2px 8px; }
 .msg.user .ph { font-size: 12px; opacity: .85; display: block; }
+.mwrap { display: grid; gap: 6px; max-width: 88%; }
+.mwrap.user { justify-self: end; justify-items: end; }
+.mwrap.bot { justify-self: start; justify-items: start; }
+.mline { display: flex; align-items: center; gap: 6px; max-width: 100%; }
+.mwrap.user .mline { flex-direction: row-reverse; }
+.mwrap .msg { max-width: none; min-width: 0; touch-action: pan-y; transition: transform .18s, opacity .18s; }
+.msg-del { flex: none; width: 30px; height: 30px; border: 0; border-radius: 99px; background: transparent; color: var(--ink-3); cursor: pointer; display: grid; place-items: center; padding: 0; visibility: hidden; }
+.msg-del:hover { color: var(--danger); background: var(--surface-2); }
+.mwrap:hover .msg-del, .mwrap.show-del .msg-del, .msg-del:focus-visible { visibility: visible; }
+.msg-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; color: var(--ink-2); }
+.msg-confirm .btn { font-size: 13px; min-height: 32px; padding: 4px 12px; }
 .typing { color: var(--ink-3); font-style: italic; }
 .daybar { font-size: 13px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; }
 .composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 12px; display: grid; gap: 8px; border-top: 1px solid var(--border); }
@@ -110,6 +123,7 @@ details.day > summary::-webkit-details-marker { display: none; }
 .notice { padding: 10px 12px; border-radius: 12px; background: var(--surface-2); font-size: 13px; color: var(--ink-2); }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--surface-2); color: var(--ink); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 14px; font-size: 14px; display: flex; gap: 12px; align-items: center; z-index: 10; max-width: calc(100% - 32px); }
 .toast button { background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer; }
+html { scroll-padding-top: calc(var(--hdr-h, 64px) + 48px); }
 [hidden] { display: none !important; }
 </style>
 
@@ -350,7 +364,15 @@ async function setWeight(date, lb, note) {
 }
 
 // ---------- boot ----------
+// The header and tabs stay pinned at the top; the tabs sit just under the header, whatever its height.
+function pinHeader() {
+  const hd = document.querySelector("header.top");
+  const set = () => document.documentElement.style.setProperty("--hdr-h", hd.offsetHeight + "px");
+  set();
+  if (window.ResizeObserver) new ResizeObserver(set).observe(hd);
+}
 async function boot() {
+  pinHeader();
   const status = $("status");
   if (!window.claude?.use) {
     status.textContent = "Open this page inside Claude to use it.";
@@ -1403,6 +1425,63 @@ function bubble(m) {
     m.tools?.length ? h("div", { class: "chips" }, m.tools.map((t) => h("span", {}, "✓ " + t))) : null,
     formatted(m.text || ""));
 }
+const TRASH_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
+// A saved message: swipe it sideways (touch), or use its trash button (shown on hover, or
+// after a tap on touch screens), then confirm to remove it from the chat log.
+function savedBubble(m) {
+  const b = bubble(m);
+  const del = h("button", { class: "msg-del", type: "button", "aria-label": "Delete this message", title: "Delete this message" });
+  del.innerHTML = TRASH_SVG;
+  const line = h("div", { class: "mline" }, b, del);
+  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, line);
+  const ask = () => {
+    if (S.busy || wrap.querySelector(".msg-confirm")) return;
+    const yes = h("button", { class: "btn btn-danger", type: "button" }, "Delete");
+    const no = h("button", { class: "btn", type: "button" }, "Cancel");
+    const bar = h("div", { class: "msg-confirm", role: "group", "aria-label": "Confirm delete" }, h("span", {}, "Are you sure you want to delete this message?"), yes, no);
+    no.onclick = () => { bar.remove(); del.focus(); };
+    yes.onclick = async () => {
+      yes.disabled = no.disabled = true;
+      try { await deleteChatMessage(m); }
+      catch (e) { toast(writeError(e)); bar.remove(); }
+    };
+    wrap.append(bar);
+    yes.focus();
+  };
+  del.onclick = ask;
+  b.addEventListener("click", (e) => { if (!e.target.closest("a") && !matchMedia("(hover: hover)").matches) wrap.classList.toggle("show-del"); });
+  // Swipe: follow a horizontal touch drag; past 80px it asks to delete, otherwise springs back.
+  let x0 = null, y0 = 0, dx = 0, horiz = false;
+  const reset = () => { x0 = null; horiz = false; b.style.transform = ""; b.style.opacity = ""; b.style.transition = ""; };
+  b.addEventListener("pointerdown", (e) => { if (e.pointerType === "mouse" || S.busy) return; x0 = e.clientX; y0 = e.clientY; dx = 0; horiz = false; });
+  b.addEventListener("pointermove", (e) => {
+    if (x0 == null) return;
+    dx = e.clientX - x0;
+    if (!horiz) {
+      if (Math.abs(e.clientY - y0) > 10 && Math.abs(e.clientY - y0) > Math.abs(dx)) { reset(); return; }
+      if (Math.abs(dx) < 10) return;
+      horiz = true;
+      try { b.setPointerCapture(e.pointerId); } catch {}
+    }
+    b.style.transition = "none";
+    b.style.transform = `translateX(${dx}px)`;
+    b.style.opacity = String(1 - Math.min(0.6, Math.abs(dx) / 200));
+  });
+  b.addEventListener("pointerup", () => { const go = horiz && Math.abs(dx) > 80; reset(); if (go) ask(); });
+  b.addEventListener("pointercancel", reset);
+  return wrap;
+}
+async function deleteChatMessage(m) {
+  const same = (x) => x.at === m.at && x.role === m.role && (x.text || "") === (m.text || "");
+  await mutateChat(S.today, (c) => {
+    const n = c.messages.length;
+    c.messages = c.messages.filter((x) => !same(x));
+    if (c.messages.length === n) return false;
+  });
+  S.chat = { ...S.chat, messages: S.chat.messages.filter((x) => !same(x)) };
+  renderChat();
+  toast("Message deleted.");
+}
 function buildCoach() {
   const v = $("v-coach");
   const list = h("div", { class: "chat", "aria-live": "polite" });
@@ -1457,7 +1536,7 @@ function scrollChat() {
 function renderChat() {
   if (!coachEls) return;
   renderDaybar();
-  const kids = S.chat.messages.map(bubble);
+  const kids = S.chat.messages.map(savedBubble);
   if (!kids.length && !S.pending) {
     kids.push(h("div", { class: "msg bot" },
       h("p", {}, `Hi ${S.prof.name}. Tell me what you ate, send a photo of your plate or a label, log your weight, or ask how things are going.`)));
