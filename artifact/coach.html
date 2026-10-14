@@ -805,6 +805,8 @@ function renderSettings() {
     why: h("textarea", { rows: "3", placeholder: "Your big picture: why this matters to you" }),
     tier: h("select", {}, h("option", { value: "quick" }, "Fast (uses the least Claude usage)"), h("option", { value: "default" }, "Thorough (slower, uses more)")),
     activity: h("input", { type: "checkbox" }),
+    // Only Michael tracks activity; the option stays visible if someone already has it on.
+    showActivity: S.pid === "michael" || !!p.activity,
     recalc: h("input", { type: "checkbox" }),
   };
   f.mode.value = p.mode || "noom";
@@ -843,7 +845,7 @@ function renderSettings() {
         x.pace = Number(f.pace.value);
         x.bigPicture = f.why.value.trim().slice(0, 600);
         x.coachTier = f.tier.value === "default" ? "default" : "quick";
-        x.activity = f.activity.checked;
+        if (f.showActivity) x.activity = f.activity.checked;
         if (f.sex.value) x.sex = f.sex.value;
         if (Number(f.age.value) >= 18 && Number(f.age.value) <= 100) { x.age = Number(f.age.value); x.ageAsOf = today; }
         const inches = Number(f.ft.value) * 12 + Number(f.inch.value || 0);
@@ -873,7 +875,7 @@ function renderSettings() {
     h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.recalc, current != null ? "Recalculate my target from these numbers" : "Set my target from these numbers"),
     h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why),
     h("label", { class: "field" }, "Coach speed", f.tier),
-    h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
+    f.showActivity && h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
     h("div", {}, save)));
 }
 
