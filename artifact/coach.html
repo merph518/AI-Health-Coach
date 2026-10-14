@@ -1225,6 +1225,126 @@ function coachTools(chip) {
 }
 
 // ---------- coach: UI ----------
+// ---------- Apple Health import (Michael) ----------
+// Reads the Health app's export (export.zip, or export.xml from inside it) in the browser,
+// streaming so a large export never sits in memory, and fills active calories, steps and
+// weigh-ins per day. Nothing leaves the device except the per-day numbers saved to the log.
+const HK = { HKQuantityTypeIdentifierActiveEnergyBurned: "active", HKQuantityTypeIdentifierStepCount: "steps", HKQuantityTypeIdentifierBodyMass: "weight" };
+let fflateP = null;
+const loadFflate = () => fflateP ||= new Promise((ok, bad) => {
+  const el = document.createElement("script");
+  el.src = "https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js";
+  el.onload = () => ok(window.fflate);
+  el.onerror = () => { fflateP = null; el.remove(); bad(new Error("Couldn't load the unzip helper. Check the connection and try again.")); };
+  document.head.append(el);
+});
+async function readHealthExport(file, from, to, onProgress) {
+  const acc = {};
+  const re = /<Record type="(HKQuantityTypeIdentifier(?:ActiveEnergyBurned|StepCount|BodyMass))"([^>]*)>/g;
+  const attr = (a, k) => { const m = a.match(new RegExp(` ${k}="([^"]*)"`)); return m ? m[1] : null; };
+  const dec = new TextDecoder();
+  let buf = "";
+  const scan = (text, final) => {
+    buf += text;
+    const cut = final ? buf.length : buf.lastIndexOf("<");
+    if (cut <= 0) return;
+    const chunk = buf.slice(0, cut);
+    buf = buf.slice(cut);
+    re.lastIndex = 0;
+    for (let m; (m = re.exec(chunk));) {
+      const a = m[2], start = attr(a, "startDate");
+      const date = start?.slice(0, 10);
+      if (!date || date < from || date > to) continue;
+      let v = Number(attr(a, "value"));
+      if (!(v >= 0)) continue;
+      const kind = HK[m[1]], unit = attr(a, "unit"), src = attr(a, "sourceName") || "?";
+      const d = (acc[date] ||= { active: {}, steps: {}, weight: null, wAt: "" });
+      if (kind === "weight") {
+        if (unit === "kg") v *= 2.20462;
+        if (d.weight == null || start < d.wAt) { d.weight = v; d.wAt = start; } // first weigh-in of the day
+      } else {
+        if (unit === "kJ") v /= 4.184;
+        d[kind][src] = (d[kind][src] || 0) + v;
+      }
+    }
+  };
+  const feed = (u8, final) => scan(dec.decode(u8, { stream: !final }), final);
+  const reader = file.stream().getReader();
+  let read = 0;
+  if (/\.zip$/i.test(file.name)) {
+    const { Unzip, UnzipInflate } = await loadFflate();
+    let found = false, ended = false, error = null;
+    const uz = new Unzip((f) => {
+      if (found || !/(^|\/)export\.xml$/.test(f.name)) return;
+      found = true;
+      f.ondata = (err, chunk, final) => { if (err) error = err; else { feed(chunk, final); if (final) ended = true; } };
+      f.start();
+    });
+    uz.register(UnzipInflate);
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) { uz.push(new Uint8Array(0), true); break; }
+      uz.push(value);
+      if (error) throw new Error("That zip couldn't be read.");
+      read += value.length; onProgress(read / file.size);
+    }
+    if (!found) throw new Error("No export.xml in that zip. Pick the export.zip from the Health app.");
+    if (error || !ended) throw new Error("That zip couldn't be read.");
+  } else {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) { feed(new Uint8Array(0), true); break; }
+      feed(value, false);
+      read += value.length; onProgress(read / file.size);
+    }
+  }
+  // iPhone and Watch both record steps and energy; summing them double counts, so keep the
+  // larger source for each day (what the Health app's own totals come close to).
+  const best = (o) => { const v = Object.values(o); return v.length ? Math.max(...v) : null; };
+  return Object.entries(acc).sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, d]) => ({ date, active: best(d.active), steps: best(d.steps), weight: d.weight }));
+}
+async function importHealth(file, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  try {
+    const to = S.today;
+    const back = addDays(to, -120);
+    const from = S.prof.startDate && S.prof.startDate > back ? S.prof.startDate : back;
+    const rows = await readHealthExport(file, from, to, (x) => { btn.textContent = `Reading ${Math.min(99, Math.round(x * 100))}%`; });
+    btn.textContent = "Saving…";
+    let nAct = 0, nW = 0;
+    for (const r of rows) {
+      const cur = S.days[r.date] || {};
+      const partial = r.date === S.today;
+      const active = r.active != null ? Math.round(r.active) : null;
+      const steps = r.steps != null ? Math.round(r.steps) : null;
+      const w = r.weight >= 60 && r.weight <= 800 && cur.weight == null ? Math.round(r.weight * 10) / 10 : null;
+      const actChanged = active != null && (cur.active !== active || !!cur.partial !== partial);
+      const stepsChanged = steps != null && cur.steps !== steps;
+      if (!actChanged && !stepsChanged && w == null) continue;
+      await mutateDay(r.date, (d) => {
+        if (active != null) { d.active = active; d.partial = partial; }
+        if (steps != null) d.steps = steps;
+        if (w != null && d.weight == null) d.weight = w; // never overwrite a weigh-in logged by hand
+      });
+      if (actChanged || stepsChanged) nAct++;
+      if (w != null) nW++;
+    }
+    const span = rows.length ? `${dShort(rows[0].date)} to ${dShort(rows[rows.length - 1].date)}` : "";
+    const text = rows.length
+      ? `Imported Apple Health data (${span}): ${nAct ? `active calories and steps updated for ${nAct} day${nAct === 1 ? "" : "s"}` : "activity already up to date"}${nW ? `, ${nW} new weigh-in${nW === 1 ? "" : "s"}` : ""}. Weigh-ins you logged yourself were kept.`
+      : `No activity or weight found in that export since ${dShort(from)}.`;
+    await mutateChat(S.today, (c) => { c.messages.push({ role: "assistant", text, tools: ["Imported Apple Health"], at: Date.now() }); });
+    renderChat();
+    renderAll();
+    toast(rows.length ? "Apple Health data imported." : "Nothing new to import.");
+  } catch (e) {
+    toast(e?.code ? writeError(e) : e?.message || "That file couldn't be read.");
+  }
+  btn.textContent = label;
+  btn.disabled = false;
+}
 let coachEls = null;
 function formatted(text) {
   const frag = document.createDocumentFragment();
@@ -1256,6 +1376,14 @@ function buildCoach() {
   const attached = h("div", { class: "attached", hidden: true });
   const note = h("p", { class: "small muted", hidden: true });
   const sugg = h("div", { class: "suggest", style: "margin-top:0", hidden: true });
+  // Apple Health import: Michael only (he's the one with an Apple Watch).
+  let health = null;
+  if (S.pid === "michael") {
+    const hfile = h("input", { type: "file", accept: ".zip,.xml,application/zip,text/xml", hidden: true });
+    const hbtn = h("button", { class: "btn", type: "button", style: "font-size:13px;min-height:32px;padding:4px 12px", onclick: () => hfile.click() }, "Import Apple Health data");
+    hfile.addEventListener("change", () => { const f = hfile.files?.[0]; hfile.value = ""; if (f) importHealth(f, hbtn); });
+    health = h("div", { class: "suggest", style: "margin-top:0" }, hbtn, hfile);
+  }
   const imgs = S.sampleLimits?.images;
   if (!imgs) cam.hidden = true; else file.accept = imgs.mediaTypes.join(",");
   file.addEventListener("change", () => {
@@ -1274,7 +1402,7 @@ function buildCoach() {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(hover: hover)").matches) { e.preventDefault(); form.requestSubmit(); }
   });
   const form = h("form", { class: "composer", onsubmit: (e) => { e.preventDefault(); sendMessage(); } },
-    note, sugg, attached, h("div", { class: "line" }, cam, file, ta, stop, send));
+    note, health, sugg, attached, h("div", { class: "line" }, cam, file, ta, stop, send));
   if (!S.sample) {
     note.textContent = "The coach isn't available in this view. You can still log on the Today tab.";
     note.hidden = false;
