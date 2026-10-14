@@ -559,6 +559,49 @@ function colorMix(d) {
       h("span", {}, h("span", { class: `dot ${k}` }), `${k[0].toUpperCase() + k.slice(1)} ${pct(k)}% `, h("span", { class: "faint num" }, `(${fmt(sum[k])})`)))));
 }
 
+// Foods logged before switching to Noom-style have no color. One click asks Claude to
+// color every uncolored food (by name, so repeats match) across the log and the library.
+const COLOR_RULE = "Color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, orange above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, orange above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, orange above 0.5. Whole grains one step greener.";
+const foodKey = (s) => String(s || "").trim().toLowerCase();
+function uncoloredFoods() {
+  const map = new Map();
+  for (const d of Object.values(S.days)) for (const i of d.items || []) if (!i.color && i.item && !map.has(foodKey(i.item))) map.set(foodKey(i.item), { food: String(i.item), kcal_per_unit: Number(i.kcal) || 0, grams_per_unit: i.grams ?? null });
+  for (const f of S.library) if (!f.color && f.name && !map.has(foodKey(f.name))) map.set(foodKey(f.name), { food: String(f.name), kcal_per_unit: Number(f.kcal) || 0, grams_per_unit: f.grams ?? null });
+  return map;
+}
+async function colorFoods(btn) {
+  const map = uncoloredFoods();
+  const list = [...map.values()].slice(0, 150);
+  if (!list.length || !S.sample) return;
+  btn.disabled = true;
+  btn.textContent = "Coloring…";
+  try {
+    const out = await S.sample.json(`You label foods for a Noom-style food log. ${COLOR_RULE} Use typical values when grams are missing.\n\nReply with only a JSON array of ${list.length} strings, each "green", "yellow" or "orange", in the same order as these foods:\n${JSON.stringify(list)}`, { modelTier: "quick", cache: false });
+    if (!Array.isArray(out) || out.length !== list.length) throw { code: "invalid_json" };
+    const colors = new Map(list.map((f, n) => [foodKey(f.food), ["green", "yellow", "orange"].includes(out[n]) ? out[n] : null]).filter((x) => x[1]));
+    let n = 0;
+    for (const date of Object.keys(S.days)) {
+      if (!(S.days[date].items || []).some((i) => !i.color && colors.has(foodKey(i.item)))) continue;
+      await mutateDay(date, (d) => { let k = 0; for (const i of d.items || []) if (!i.color && colors.has(foodKey(i.item))) { i.color = colors.get(foodKey(i.item)); k++; } n += k; if (!k) return false; });
+    }
+    if (S.library.some((f) => !f.color && colors.has(foodKey(f.name))))
+      await mutateLib((l) => { let k = 0; for (const f of l.foods || []) if (!f.color && colors.has(foodKey(f.name))) { f.color = colors.get(foodKey(f.name)); k++; } if (!k) return false; });
+    toast(`Colored ${colors.size} food${colors.size === 1 ? "" : "s"} (${n} log entr${n === 1 ? "y" : "ies"}).${map.size > list.length ? " Tap again for the rest." : ""}`);
+  } catch (e) {
+    toast(e?.code === "invalid_json" ? "Couldn't read the colors back. Try again." : errorCopy(e?.code));
+  }
+  btn.disabled = false;
+  renderAll();
+}
+function colorFoodsButton() {
+  if (S.prof.mode !== "noom" || !S.sample) return null;
+  const n = uncoloredFoods().size;
+  if (!n) return null;
+  const btn = h("button", { class: "btn", type: "button", style: "margin-top:10px" }, `Color-code my foods (${n})`);
+  btn.onclick = () => colorFoods(btn);
+  return h("div", {}, btn, h("p", { class: "small muted", style: "margin-top:4px" }, "Noom-style shows each food as green, yellow or orange. Foods logged before you switched don't have a color yet."));
+}
+
 // ---------- Today ----------
 let todayForms = null;
 function defaultMeal() {
@@ -666,6 +709,7 @@ function renderToday() {
         h("div", { style: `width:${Math.min(100, (d.cal / target) * 100)}%;background:var(${left >= 0 ? "--accent" : "--danger"})` })),
       macros(d),
       S.prof.mode === "noom" ? colorMix(d) : null,
+      colorFoodsButton(),
       h("p", { class: "small muted", style: "margin-top:10px" },
         S.prof.activity
           ? d.active != null
@@ -1106,7 +1150,7 @@ function context(message) {
   if (d.base != null) {
     const z = zoneFor(d.target);
     L.push(p.activity
-      ? `Calorie target: base ${fmt(d.base)} per day, plus ${Math.round((p.eatBackPct ?? 0.5) * 100)}% of that day's Apple Watch active calories (never resting calories). Recalculate after about every 20 lb lost.`
+      ? `Calorie target: base ${fmt(d.base)} per day, plus ${Math.round((p.eatBackPct ?? 0.5) * 100)}% of that day's Apple Watch active calories (never resting calories).${z ? ` Today's zone: ${fmt(z.low)} to ${fmt(z.high)}.` : ""} Recalculate after about every 20 lb lost.`
       : `Calorie target: ${fmt(d.base)} per day${z ? ` (zone ${fmt(z.low)} to ${fmt(z.high)})` : ""}. Activity is not tracked, so there is no eat-back.`);
     L.push(`Today so far: ${fmt(d.cal)} eaten of ${fmt(d.target)}, ${fmt(d.target - d.cal)} left. Protein ${d.p} g.`);
     if (y.items.length) L.push(`Yesterday: ${fmt(y.cal)} eaten of ${fmt(y.target ?? y.base)}${p.activity && y.active != null ? ` (active ${fmt(y.active)} cal${y.partial ? ", partial" : ""})` : ""}. Meals: ${[...new Set(y.items.map((i) => i.meal))].join(", ")}.`);
