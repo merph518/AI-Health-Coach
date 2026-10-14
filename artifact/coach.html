@@ -884,6 +884,13 @@ function renderSettings() {
 // issue for Michael and writes back the issue number (see artifact/README.md).
 const KINDS = [["bug", "Something isn't working"], ["idea", "Idea or request"], ["other", "Something else"]];
 let feedbackList = null;
+// Used by the Feedback form and the coach's send_feedback tool.
+function sendFeedback(kind, text) {
+  return withRetry(() => S.db.collection("feedback").doc(`${S.today}-${S.pid}-${uid()}`).set({
+    pid: S.pid, name: String(S.prof.name || S.pid), kind: KINDS.some((k) => k[0] === kind) ? kind : "other", text: String(text).slice(0, 4000),
+    at: Date.now(), date: S.today, device: navigator.userAgent.slice(0, 300), status: "new",
+  }));
+}
 function renderFeedback() {
   const v = $("v-feedback");
   const kind = h("select", {}, KINDS.map(([k, l]) => h("option", { value: k }, l)));
@@ -897,10 +904,7 @@ function renderFeedback() {
       if (body.length < 3) { toast("Write a little about it first."); return; }
       send.disabled = true;
       try {
-        await withRetry(() => S.db.collection("feedback").doc(`${S.today}-${S.pid}-${uid()}`).set({
-          pid: S.pid, name: String(S.prof.name || S.pid), kind: kind.value, text: body.slice(0, 4000),
-          at: Date.now(), date: S.today, device: navigator.userAgent.slice(0, 300), status: "new",
-        }));
+        await sendFeedback(kind.value, body);
         text.value = "";
         toast("Thanks! Sent to Michael.");
       } catch (err) { toast(writeError(err)); }
@@ -980,6 +984,11 @@ ESTIMATING FOOD
 
 AFTER LOGGING
 Reply with what you logged (item and calories, one line each), the meal's calories and protein, today's total so far and calories left against today's target. Then one brief, practical tip, when it adds something.
+
+THE APP ITSELF
+- You cannot change how this app looks or works, its settings for other people, or its code. Never offer to, and never say a change was made.
+- When they report a problem with the app or ask for a change or new feature, offer to send it to Michael as feedback. Once they say yes (or if they asked you to send it), call send_feedback with a clear summary in their words, then tell them it's on Michael's list and they can follow it on the Feedback tab.
+- Only send what they asked to send. Food, weight and coaching questions are not feedback.
 
 CHECK-INS
 The app shows check-in questions (they appear as your earlier messages). When they answer one:
@@ -1075,6 +1084,8 @@ const NUTR = {
   fat: { type: "number", description: "Fat g for one unit" },
   grams: { type: "number", description: "Grams of one unit, if known" },
 };
+// These tools are everything the coach can do. None of them touches the page or its code, and
+// the page never declares the `artifact` capability, so no chat, by anyone, can republish it.
 function coachTools(chip) {
   const tools = [
     {
@@ -1180,6 +1191,20 @@ function coachTools(chip) {
           weights: recent.filter((d) => d.weight != null).map((d) => ({ date: d.date, lb: d.weight })),
           days: recent.filter((d) => d.items.length).map((d) => ({ date: d.date, kcal: d.cal, target: d.target, protein: d.p })),
         };
+      },
+    },
+    {
+      name: "send_feedback",
+      description: "Send a bug report or app change request to Michael. It becomes an item on his to-do list. Use only when the person wants it sent.",
+      inputSchema: { type: "object", required: ["kind", "text"], properties: {
+        kind: { type: "string", enum: KINDS.map((k) => k[0]), description: "bug: something isn't working; idea: a change or new feature; other" },
+        text: { type: "string", description: "What happened or what they want, clear enough for Michael to act on, in their words" } } },
+      async execute(a) {
+        const text = String(a.text ?? "").trim();
+        if (text.length < 3) throw new ToolErr("text is empty");
+        await sendFeedback(a.kind, text);
+        chip("Sent feedback to Michael");
+        return { sent: true };
       },
     },
   ];

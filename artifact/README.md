@@ -5,9 +5,13 @@ Live page: https://claude.ai/artifact/HsXvPzyvfoNbwfW9s5TF7y
 `coach.html` is the whole app: one page published as a Claude artifact. It runs on the
 viewer's own Claude plan (no API key): the coach uses the `sample` capability with page
 functions as tools, and the log lives in the artifact's `db`. Leah and Eve use their own
-free Claude accounts, invited from the Share menu as Editors (no public link).
+free Claude accounts, invited from the Share menu as Contributors (can use the page and
+write the log, but not edit the page). Only Michael is an Editor.
 
-Capabilities: `{ db: {}, sample: { images: true }, user: {} }`
+Capabilities: `{ db: {}, sample: { images: true }, user: {} }`. Never add `artifact` (or
+`self`): without it the page, and so the in-app coach, cannot republish itself. The coach's
+tools only read and write the log and send feedback; app changes go through the Feedback
+tab or the coach's `send_feedback` tool.
 
 ## Data layout (artifact db)
 
