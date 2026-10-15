@@ -30,7 +30,7 @@ Feedback tab or the coach's `send_feedback` tool.
   person switcher), coachAvatar (Your coach: a preset sprout|owl|bear|fox|panda|turtle|cat|dog|bunny|robot|runner|star,
   or a photo data URL; default sprout),
   coachNotes (custom instructions), onboarded (date the welcome setup deck was finished; until then
-  Leah and Eve see a "Let's get you set up" card on the Coach tab), targets: [{from, kcal, basis}];
+  Leah and Eve see a "Let's get you set up" card on the Coach tab, unless they closed it: onboardDismissed date), targets: [{from, kcal, basis}];
   if weight was skipped in setup, the first weigh-in sets startWeight and an automatic target). For Leah and Eve the
   prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
 - `people/{pid}/days/{YYYY-MM-DD}`: items [{id, meal, item, qty, kcal, p, c, f, grams?,

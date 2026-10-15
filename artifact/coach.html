@@ -395,7 +395,9 @@ h2.big { font-size: 26px; text-align: center; margin: 0; line-height: 1.2; }
 .stage textarea { font-size: 16px; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; background: var(--surface); color: var(--ink); resize: vertical; }
 .onb .opt strong { font-weight: 600; }
 .avchoices.big { justify-content: center; }
-.onbcard { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; }
+.onbcard { position: relative; display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; }
+.onbx { position: absolute; top: 6px; right: 6px; width: 36px; height: 36px; border: 0; border-radius: 50%; background: transparent; color: var(--ink-3); font-size: 22px; line-height: 1; cursor: pointer; }
+.onbx:hover { background: var(--surface-2); color: var(--ink); }
 .onbcard .art { width: 72px; height: 72px; }
 .onbcard .art span { font-size: 38px; }
 .onbcard p { margin: 2px 0 10px; }
@@ -1836,7 +1838,8 @@ async function openLesson(n) {
 
 // ----- welcome setup: a tap-through deck like the lessons -----
 // Asks only for what's missing from the profile, plus the program and coach choices. Weight can wait.
-const needsOnboarding = () => S.pid && S.pid !== "michael" && S.prof && !S.prof.onboarded;
+// The Coach-tab card shows until they finish the deck or close the card (onboardDismissed, kept in the profile).
+const needsOnboarding = () => S.pid && S.pid !== "michael" && S.prof && !S.prof.onboarded && !S.prof.onboardDismissed;
 function openOnboarding() {
   const p = S.prof, today = S.today, lw = latestWeight();
   const dlg = sheet("Welcome");
@@ -1964,7 +1967,12 @@ function openOnboarding() {
   draw();
 }
 function onboardingCard() {
-  return h("div", { class: "card onbcard" },
+  const close = h("button", { type: "button", class: "onbx", "aria-label": "Close the setup card", onclick: async () => {
+    close.disabled = true;
+    try { await mutateProfile((p) => { p.onboardDismissed = S.today; }); renderChat(); toast("You can run the setup anytime from Settings → Program."); }
+    catch (e) { toast(writeError(e)); close.disabled = false; }
+  } }, "×");
+  return h("div", { class: "card onbcard" }, close,
     h("div", { class: "art" }, h("span", {}, "👋")),
     h("div", {}, h("strong", {}, "Let's get you set up"),
       h("p", { class: "small muted" }, "A few quick questions so your coach knows you. About two minutes."),
