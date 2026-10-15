@@ -1621,6 +1621,29 @@ Reply with only a JSON array of 7 objects: {"title": string (at most 40 characte
 }
 // ----- lesson reader -----
 function closeX(dlg) { return h("button", { class: "btn x", type: "button", "aria-label": "Close", onclick: () => dlg.close() }, "✕"); }
+// Android shows only its photo picker for a plain file input, so offer the camera there as its own choice.
+// Elsewhere (iPhone) the system menu already includes Take Photo, so the input opens as before.
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+function photoPick(file) {
+  return () => {
+    if (!IS_ANDROID) { file.click(); return; }
+    const dlg = sheet("Add a photo");
+    const go = (camera) => {
+      file.accept = "image/*";
+      if (camera) file.setAttribute("capture", "environment"); else file.removeAttribute("capture");
+      dlg.close(); file.click();
+    };
+    put(dlg, h("div", { class: "stack", style: "gap:10px" },
+      h("div", { class: "sheet-head" }, h("h2", { class: "serif" }, "Add a photo"), closeX(dlg)),
+      h("button", { class: "btn btn-primary", type: "button", onclick: () => go(true) }, "📷 Take a photo"),
+      h("button", { class: "btn", type: "button", onclick: () => go(false) }, "🖼️ Choose from your photos")));
+  };
+}
+// The photo types Claude accepts; a gallery pick on Android can be something else (HEIC, video).
+function photoTypeOk(f, imgs) {
+  if (!imgs || !f.type || imgs.mediaTypes.includes(f.type)) return true;
+  toast("That file type can't be sent. Try a JPEG or PNG photo."); return false;
+}
 function sheet(label) {
   const dlg = h("dialog", { class: "sheet", "aria-label": label });
   dlg.addEventListener("close", () => dlg.remove());
@@ -2300,11 +2323,12 @@ function logWithCoach() {
   const imgs = S.sampleLimits?.images;
   const file = h("input", { type: "file", accept: imgs ? imgs.mediaTypes.join(",") : "image/*", capture: "environment", hidden: true });
   const shot = h("div", { class: "attached", hidden: true });
-  const camBtn = imgs ? h("button", { class: "btn", type: "button", onclick: () => file.click() }, "Add a photo") : null;
+  const camBtn = imgs ? h("button", { class: "btn", type: "button", onclick: photoPick(file) }, "Add a photo") : null;
   file.addEventListener("change", () => {
     const f = file.files?.[0]; file.value = "";
     if (!f) return;
     if (f.size > imgs.maxInputBytes) { toast("That photo is too large."); return; }
+    if (!photoTypeOk(f, imgs)) return;
     photo = f;
     const url = URL.createObjectURL(f);
     shot.replaceChildren(h("img", { src: url, alt: "Attached photo" }), h("span", { class: "muted" }, "Photo attached"),
@@ -3701,7 +3725,7 @@ function buildCoach() {
   const daybar = h("div", { class: "daybar" });
   const ta = h("textarea", { rows: "1", placeholder: "What did you eat?", "aria-label": "Message to your coach" });
   const file = h("input", { type: "file", accept: "image/*", hidden: true });
-  const cam = h("button", { class: "btn", type: "button", "aria-label": "Attach a photo", title: "Attach a photo", onclick: () => file.click() }, "📷");
+  const cam = h("button", { class: "btn", type: "button", "aria-label": "Attach a photo", title: "Attach a photo", onclick: photoPick(file) }, "📷");
   const send = h("button", { class: "btn btn-primary", type: "submit" }, "Send");
   const stop = h("button", { class: "btn", type: "button", hidden: true, onclick: () => S.ctl?.abort() }, "Stop");
   const attached = h("div", { class: "attached", hidden: true });
@@ -3713,6 +3737,7 @@ function buildCoach() {
     file.value = "";
     if (!f) return;
     if (imgs && f.size > imgs.maxInputBytes) { toast("That photo is too large."); return; }
+    if (!photoTypeOk(f, imgs)) return;
     S.photo = f;
     const url = URL.createObjectURL(f);
     attached.replaceChildren(h("img", { src: url, alt: "Attached photo" }), h("span", { class: "muted" }, "Photo attached"),
