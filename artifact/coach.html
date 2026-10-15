@@ -73,6 +73,13 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 /* The picture sits on its own fixed layer the size of the screen, so it never scrolls or stretches
    to the page's length (phones ignore background-attachment: fixed). */
 html[data-bgimg="on"] body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 100lvh; z-index: -1; pointer-events: none; background-image: linear-gradient(color-mix(in srgb, var(--bg) 30%, transparent), color-mix(in srgb, var(--bg) 30%, transparent)), var(--bg-img); background-size: cover; background-position: center; }
+/* Over a picture, lift everything off it with a soft shadow so it reads on busy or light photos. */
+html[data-bgimg="on"][data-theme] .card, html[data-bgimg="on"][data-theme] .daybar, html[data-bgimg="on"][data-theme] .msg,
+html[data-bgimg="on"][data-theme] .subtab, html[data-bgimg="on"][data-theme] .btn, html[data-bgimg="on"][data-theme] .composer textarea,
+html[data-bgimg="on"][data-theme] .task { box-shadow: 0 1px 2px rgba(0, 0, 0, .14), 0 4px 14px rgba(0, 0, 0, .16); }
+html[data-bgimg="on"][data-theme] .avatar { box-shadow: 0 1px 3px rgba(0, 0, 0, .25); }
+html[data-bgimg="on"][data-theme] .card .btn, html[data-bgimg="on"][data-theme] .card .task, html[data-bgimg="on"][data-theme] .msg .btn { box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
+html[data-bgimg="on"] .tab { text-shadow: 0 1px 2px color-mix(in srgb, var(--bg) 70%, transparent); }
 html[data-bgimg="on"] .composer { margin: 0 -16px; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top-color: color-mix(in srgb, var(--border) 60%, transparent); }
 html[data-bgimg="on"][data-theme] header.top, html[data-bgimg="on"][data-theme] .tabs, html[data-bgimg="on"] .composer { background: color-mix(in srgb, var(--bg) 80%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .avatar .emo { font-size: 19px; line-height: 1; }
