@@ -2093,6 +2093,7 @@ const ICONS = {
   drop: '<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/>',
   steps: '<path d="M7 14c-1.5 0-3-1.5-3-4s1-5 3-5 3 2 3 4-1 5-3 5zM8 18a2 2 0 1 1-4 0v-2h4zM17 18c1.5 0 3-1.5 3-4s-1-5-3-5-3 2-3 4 1 5 3 5zM16 22a2 2 0 1 0 4 0v-2h-4z"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  pill: '<rect x="3" y="8.5" width="18" height="7" rx="3.5" transform="rotate(-45 12 12)"/><path d="M9.5 9.5l5 5"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
@@ -2324,6 +2325,17 @@ function logWithCoach() {
     h("div", { class: "row", style: "justify-content:flex-end;align-items:center" }, more, go, done)));
   ta.focus(); // inside the tap, so phones open the keyboard
 }
+// Morning medications: a tap checks it off for the day (and a second tap undoes it). Profile hideMeds hides it.
+function medsTask() {
+  if (S.prof.hideMeds) return null;
+  const done = !!S.days[S.today]?.meds;
+  return { ic: "pill", title: done ? "Morning meds taken" : "Take morning meds", sub: done ? "Checked off for today · tap to undo" : "Tap once you've taken them", done, onclick: toggleMeds };
+}
+async function toggleMeds() {
+  const on = !S.days[S.today]?.meds;
+  try { await mutateDay(S.today, (d) => { if (on) d.meds = Date.now(); else delete d.meds; }); renderAll(); }
+  catch (err) { toast(writeError(err)); }
+}
 function taskRow({ ic, title, sub, done, meter, onclick, thumb, pop }) {
   return h("li", {}, h("button", { type: "button", class: `task${done ? " done" : ""}${pop != null ? " pop" : ""}`, style: pop != null ? `--el:${pop}ms` : null, onclick, disabled: !onclick },
     thumb ? photoImg(thumb, "thumb") : null,
@@ -2336,15 +2348,17 @@ function taskRow({ ic, title, sub, done, meter, onclick, thumb, pop }) {
 function basicChecklist(d) {
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
   const W = waterPlan(), water = waterCount(S.days[S.today], W);
-  const tasks = [
+  let tasks = [
     { ic: "meal", title: meals.length === 3 ? "Meals logged" : "Log your meals", sub: `${meals.length} of 3 meals logged today${d.items.length ? ` · ${fmt(d.cal)} cal` : ""}`, done: meals.length === 3, meter: meals.length / 3, onclick: logWithCoach },
     d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
+    medsTask(),
     { ic: "drop", title: water >= W.goal ? "Water goal met" : "Drink water", sub: `${water} of ${W.goal} ${waterWord(W, W.goal)}`, done: water >= W.goal, meter: water / W.goal, onclick: openWater },
   ];
   if (S.prof.activity && d.steps != null) {
     const goal = Number(S.prof.stepGoal) || 6000;
     tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
   }
+  tasks = tasks.filter(Boolean);
   const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
     h("div", { class: "phead", style: "margin-bottom:12px" }, h("h2", {}, "Today"), h("span", { class: "small muted num" }, `${n} of ${tasks.length} done`)),
@@ -2358,9 +2372,10 @@ function programCard(d) {
   const P0 = prog();
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
   const W = waterPlan(), water = waterCount(S.days[S.today], W);
-  const tasks = [
+  let tasks = [
     { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: logWithCoach },
     d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
+    medsTask(),
   ];
   if (P0.finished) tasks.push({ ic: "book", title: "Program complete", sub: "Every lesson is done. Amazing!", done: true, onclick: openLessonList });
   else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `${(() => { const r = lessonProgress(lessonKey(P0.tk, P0.next.n)); return r ? `Pick up where you left off · screen ${r.i + 1} of ${r.n}` : "Today's lesson · about 5 minutes"; })()}${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
@@ -2371,6 +2386,7 @@ function programCard(d) {
     tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
   }
   tasks.push(P0.goal ? { ic: "flag", title: "This week's goal", sub: P0.goal.text, done: true, onclick: openGoal } : { ic: "flag", title: "Set this week's goal", sub: P0.lastGoal ? "Look back at last week, then pick one small goal" : "One small, specific goal for the week", done: false, onclick: openGoal });
+  tasks = tasks.filter(Boolean);
   const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
     h("div", { class: "banner" }, photoImg(weekPhoto(P0, P0.week)),
@@ -2673,6 +2689,7 @@ function renderSettings() {
     pace: h("select", {}, [0.5, 1, 1.5, 2].map((x) => h("option", { value: String(x) }, `${x} lb per week`))),
     theme: h("select", {}, h("option", { value: "light" }, "Light"), h("option", { value: "dark" }, "Dark"), h("option", { value: "system" }, "Match my device")),
     photos: h("input", { type: "checkbox" }),
+    meds: h("input", { type: "checkbox", checked: !p.hideMeds }),
     level: h("select", {}, ACT_LEVELS.map(([k, , label, desc]) => h("option", { value: k }, `${label}: ${desc}`))),
     why: h("textarea", { rows: "3", placeholder: "Your big picture: why this matters to you" }),
     tier: h("select", {}, h("option", { value: "quick" }, "Fast (uses the least Claude usage)"), h("option", { value: "default" }, "Thorough (slower, uses more)")),
@@ -2777,6 +2794,7 @@ function renderSettings() {
       h("div", { class: "field" }, h("span", {}, "Program style"), modeBox),
       h("p", { class: "small muted" }, "Switching only changes how things look and how your coach talks. Your log stays the same, so you can switch back anytime."),
       h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why),
+      h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.meds, "Show \"Take morning meds\" on my daily checklist"),
       h("div", {}, h("button", { class: "linkish small", type: "button", onclick: openOnboarding }, "Run the welcome setup again"))],
     health: [
       h("div", { class: "row top" }, h("label", { class: "field grow" }, "Sex (for the calorie formula)", f.sex), h("label", { class: "field grow" }, "Date of birth", f.birth, f.age, ageNote)),
@@ -2818,6 +2836,7 @@ function renderSettings() {
         x.activityLevel = f.level.value;
         x.theme = f.theme.value;
         x.photos = f.photos.checked;
+        if (f.meds.checked) delete x.hideMeds; else x.hideMeds = true;
         for (const k of ["accent", "bg", "bgImage"]) { if (colors[k]) x[k] = colors[k]; else delete x[k]; }
         x.bigPicture = f.why.value.trim().slice(0, 600);
         x.coachTier = f.tier.value === "default" ? "default" : "quick";
@@ -3156,6 +3175,7 @@ function context(message) {
       ? "WEIGH-IN: no weight logged today, and they've already been asked about it today. Do not ask or remind them about weighing in again today. If they bring it up, log it gladly."
       : "WEIGH-IN: no weight logged today. You may mention weighing in at most once today, lightly, and never again after that.");
   }
+  if (!p.hideMeds) L.push(`Morning medications: ${S.days[today]?.meds ? "checked off today" : "not checked off yet today"}. Never remind them about medications or ask what they take; if they mention taking them, they can tick it on the Today checklist.`);
   if (p.sex && p.heightIn) L.push(`Profile: ${p.sex}, ${p.heightIn} in${ageNow(p, today) ? `, age ${ageNow(p, today)}` : ""}${p.goalWeight ? `, goal ${p.goalWeight} lb` : ""}.${p.startWeight ? ` Started at ${p.startWeight} lb on ${p.startDate}.` : ""}`);
   if (p.bigPicture) L.push(`Their reason ("big picture"): ${p.bigPicture}`);
   if (d.base != null) {

@@ -35,7 +35,8 @@ Feedback tab or the coach's `send_feedback` tool.
   prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
 - `people/{pid}/days/{YYYY-MM-DD}`: items [{id, meal, item, qty, kcal, p, c, f, grams?,
   color? green|yellow|orange, note?}] (nutrition per unit), weight, water (count of that day's waterUnit, default glass),
-  active, steps, partial
+  active, steps, partial, meds (time the "Take morning meds" checklist task was ticked; hidden for anyone
+  whose profile has hideMeds, set from Settings → Program)
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
   A food with `recipe: {id, servings, items: [{item, qty, kcal, p, c, f}], at}` is a saved recipe (Today → Daily Log →
   My recipes, or the coach's `save_recipe` tool); its kcal/p/c/f are per serving, logging never overwrites them, and
