@@ -374,6 +374,12 @@ h2.big { font-size: 26px; text-align: center; margin: 0; line-height: 1.2; }
 .stage input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
 .scalelabs { display: flex; justify-content: space-between; }
 .stage textarea { font-size: 16px; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; background: var(--surface); color: var(--ink); resize: vertical; }
+.onb .opt strong { font-weight: 600; }
+.avchoices.big { justify-content: center; }
+.onbcard { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; }
+.onbcard .art { width: 72px; height: 72px; }
+.onbcard .art span { font-size: 38px; }
+.onbcard p { margin: 2px 0 10px; }
 .pnav { display: flex; justify-content: space-between; gap: 10px; padding-top: 10px; }
 .pnav .next { flex: 1; max-width: 240px; margin-left: auto; min-height: 48px; font-size: 16px; }
 .confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -625,7 +631,20 @@ async function removeFood(id) {
 async function setWeight(date, lb, note) {
   await mutateDay(date, (d) => { d.weight = lb; if (note) d.weightNote = note; else delete d.weightNote; });
   const p = S.prof;
-  if (!p.startWeight) await mutateProfile((x) => { x.startWeight = lb; x.startDate = date; });
+  if (!p.startWeight || !(p.targets || []).length) await mutateProfile((x) => {
+    if (!x.startWeight) { x.startWeight = lb; x.startDate = date; }
+    addAutoTarget(x, lb, date); // someone who skipped their weight in setup gets a budget with their first weigh-in
+  });
+}
+// Give a profile its first calorie target once the formula has everything it needs. Returns the target or null.
+function addAutoTarget(x, lb, date) {
+  if ((x.targets || []).length) return null;
+  const age = ageNow(x, date), inches = Number(x.heightIn), sex = x.sex;
+  if (!FLOOR[sex] || !(age >= 18 && age <= 100) || !(inches >= 48 && inches <= 96) || !(lb >= 60 && lb <= 800)) return null;
+  const pace = Number(x.pace) || 1, level = actLevel(x.activityLevel)[0];
+  const c = { sex, age, inches, lb, level, ...dailyTarget({ sex, lb, inches, age, pace, level }) };
+  x.targets = [{ from: date, kcal: c.target, basis: `Mifflin-St Jeor: ${c.sex}, ${c.lb} lb, ${c.inches} in, age ${c.age}, ${actLevel(c.level)[2].toLowerCase()} x${actLevel(c.level)[1]} = ${fmt(c.tdee)} maintenance, minus ${c.pace} lb/week${c.floored ? ", held at the floor" : ""}.` }];
+  return c;
 }
 
 // ---------- boot ----------
@@ -1618,6 +1637,141 @@ async function openLesson(n) {
   if (resumable) toast("Picked up where you left off.");
 }
 
+// ----- welcome setup: a tap-through deck like the lessons -----
+// Asks only for what's missing from the profile, plus the program and coach choices. Weight can wait.
+const needsOnboarding = () => S.pid && S.pid !== "michael" && S.prof && !S.prof.onboarded;
+function openOnboarding() {
+  const p = S.prof, today = S.today, lw = latestWeight();
+  const dlg = sheet("Welcome");
+  dlg.classList.add("player", "onb");
+  const top = h("div", { class: "ptop" }), stage = h("div", { class: "stage" }), nav = h("div", { class: "pnav" });
+  put(dlg, top, stage, nav);
+  const a = {
+    mode: p.mode === "classic" ? "classic" : "noom", why: p.bigPicture || "", sex: p.sex || "", age: ageNow(p, today) ?? "",
+    ft: p.heightIn ? Math.floor(p.heightIn / 12) : "", inch: p.heightIn ? +(p.heightIn % 12).toFixed(1) : "", weight: "", goal: p.goalWeight ?? "",
+    pace: String(p.pace ?? 1), level: p.activityLevel || "", tone: p.coachTone || "warm", style: p.coachStyle || "balanced", look: p.coachAvatar || "sprout",
+  };
+  const num = (v) => (v === "" || v == null ? NaN : Number(v));
+  const okAge = () => num(a.age) >= 18 && num(a.age) <= 100;
+  const inches = () => num(a.ft) * 12 + (Number(a.inch) || 0);
+  const okHeight = () => inches() >= 48 && inches() <= 96;
+  const okWeight = (v) => num(v) >= 60 && num(v) <= 800;
+  const art = (e) => h("div", { class: "art" }, h("span", {}, e));
+  const field = (label, input) => h("label", { class: "field" }, label, input);
+  const input = (key, attrs) => { const el = h("input", { ...attrs, value: a[key] }); el.addEventListener("input", () => { a[key] = el.value; drawNav(); }); return el; };
+  const pick = (key, list) => h("div", { class: "opts" }, list.map(([v, label, desc]) =>
+    h("button", { type: "button", class: `opt${a[key] === v ? " picked" : ""}`, onclick: () => { a[key] = v; draw(); } },
+      h("strong", {}, label), desc ? h("span", { class: "small muted", style: "display:block;margin-top:2px" }, desc) : null)));
+  const first = String(p.name || "").split(" ")[0] || "there";
+  const screens = [
+    { id: "hi", body: () => [art("👋"), h("h2", { class: "serif big" }, `Welcome, ${first}!`),
+      h("p", { class: "say" }, "A few quick questions so your coach can set things up just for you. It takes about two minutes."),
+      h("p", { class: "center small muted" }, "You can change any of this later in Settings.")], next: "Let's go" },
+    { id: "mode", body: () => [art("🧭"), h("p", { class: "say" }, "How would you like to track?"),
+      pick("mode", [["noom", "Colors and lessons", "Foods get green, yellow or orange, plus a short daily lesson, checklist and weekly goal."], ["classic", "Just the numbers", "Calories, protein and what's left. No colors or lessons."]])] },
+    { id: "why", body: () => [art("🏔️"), h("p", { class: "say" }, "Why does this matter to you?"),
+      (() => { const ta = h("textarea", { rows: "4", maxlength: "600", placeholder: "For example: to have more energy with my kids, or to feel good at the beach this summer", value: a.why }); ta.addEventListener("input", () => { a.why = ta.value; }); return ta; })(),
+      h("p", { class: "small muted center" }, "Your coach will remind you of this on hard days. Optional.")] },
+    !p.sex && { id: "sex", body: () => [art("🧬"), h("p", { class: "say" }, "For the calorie formula, which should we use?"), pick("sex", [["female", "Female"], ["male", "Male"]])], ok: () => !!a.sex },
+    ageNow(p, today) == null && { id: "age", body: () => [art("🎂"), h("p", { class: "say" }, "How old are you?"),
+      field("Age", input("age", { type: "number", inputmode: "numeric", min: "18", max: "100", placeholder: "Years" }))], ok: okAge },
+    !p.heightIn && { id: "height", body: () => [art("📏"), h("p", { class: "say" }, "How tall are you?"),
+      h("div", { class: "row" }, h("label", { class: "field grow" }, "Feet", input("ft", { type: "number", inputmode: "numeric", min: "4", max: "7" })),
+        h("label", { class: "field grow" }, "Inches", input("inch", { type: "number", inputmode: "decimal", min: "0", max: "11.5", step: "0.5" })))], ok: okHeight },
+    !p.startWeight && !lw && { id: "weight", body: () => [art("⚖️"), h("p", { class: "say" }, "What do you weigh today?"),
+      field("Weight (lb)", input("weight", { type: "number", inputmode: "decimal", step: "0.1", min: "60", max: "800" })),
+      h("p", { class: "small muted center" }, "Not ready? Skip it for now. Your calorie budget will be set the first time you weigh in.")],
+      ok: () => a.weight === "" || okWeight(a.weight), skip: () => a.weight === "" },
+    p.goalWeight == null && { id: "goal", body: () => [art("🎯"), h("p", { class: "say" }, "Do you have a goal weight in mind?"),
+      field("Goal weight (lb)", input("goal", { type: "number", inputmode: "decimal", step: "0.1", min: "60", max: "800" })),
+      h("p", { class: "small muted center" }, "Optional. Plenty of people start without one.")],
+      ok: () => a.goal === "" || okWeight(a.goal), skip: () => a.goal === "" },
+    !(p.targets || []).length && { id: "pace", body: () => [art("🐢"), h("p", { class: "say" }, "How fast would you like to go?"),
+      pick("pace", [["0.5", "Gentle", "About ½ lb a week"], ["1", "Steady", "About 1 lb a week (most popular)"], ["1.5", "Brisk", "About 1½ lb a week"], ["2", "Fast", "About 2 lb a week, if your weight allows"]])] },
+    !p.activityLevel && { id: "level", body: () => [art("🚶"), h("p", { class: "say" }, "What does a normal week look like?"),
+      pick("level", ACT_LEVELS.map(([k, , label, desc]) => [k, label, desc]))], ok: () => !!a.level },
+    { id: "tone", body: () => [art("💬"), h("p", { class: "say" }, "How should your coach talk to you?"), pick("tone", COACH_TONES.map(([k, l]) => [k, l]))] },
+    { id: "style", body: () => [art("📝"), h("p", { class: "say" }, "And how long should replies be?"),
+      pick("style", [["brief", "Short and sweet", "Just the numbers, a few lines"], ["balanced", "Balanced", "Short, with a little explanation"], ["detailed", "Detailed", "Fuller answers with the math and ideas"]])] },
+    { id: "look", body: () => [h("p", { class: "say" }, "Last one: pick a face for your coach."),
+      h("div", { class: "avchoices big", role: "radiogroup", "aria-label": "Coach avatar" }, COACH_LOOKS.map(([k]) =>
+        h("button", { type: "button", class: "avpick", role: "radio", "aria-checked": String(a.look === k), "aria-label": k, title: k, onclick: () => { a.look = k; draw(); } }, coachAvatar(k)))),
+      h("div", { class: "center" }, coachAvatar(a.look, "lg"))] },
+    { id: "end", body: () => endScreen() },
+  ].filter(Boolean);
+  let i = 0, saved = false, result = null;
+  const values = (finished) => (x) => {
+    x.mode = a.mode;
+    x.bigPicture = a.why.trim().slice(0, 600);
+    if (a.sex) x.sex = a.sex;
+    if (okAge() && ageNow(p, today) == null) { x.age = num(a.age); x.ageAsOf = today; }
+    if (okHeight() && !p.heightIn) x.heightIn = inches();
+    if (okWeight(a.goal)) x.goalWeight = num(a.goal);
+    if (!(p.targets || []).length) x.pace = Number(a.pace);
+    if (a.level) x.activityLevel = a.level;
+    x.coachTone = a.tone; x.coachStyle = a.style;
+    if (a.look && a.look !== "sprout") x.coachAvatar = a.look; else if (!okAvatar(x.coachAvatar)) delete x.coachAvatar;
+    if (okWeight(a.weight) && !x.startWeight) { x.startWeight = num(a.weight); x.startDate = today; }
+    if (finished) x.onboarded = today;
+    const lb = lw?.weight ?? (okWeight(a.weight) ? num(a.weight) : null);
+    result = lb ? addAutoTarget(x, lb, today) : null;
+  };
+  const finish = async () => {
+    if (saved) return;
+    saved = true;
+    try {
+      await mutateProfile(values(true));
+      if (okWeight(a.weight) && !S.days[today]?.weight) await mutateDay(today, (d) => { d.weight = num(a.weight); });
+      applyLook(lookOf(S.prof)); refreshAvatars(); renderAll(); buildTodayForms();
+      draw();
+    } catch (e) { saved = false; toast(writeError(e)); }
+  };
+  // Closing early keeps what's been answered so far; the welcome card stays until the end.
+  dlg.addEventListener("close", () => { if (!saved && i > 0) mutateProfile(values(false)).then(() => { refreshAvatars(); renderAll(); }).catch(() => {}); });
+  function endScreen() {
+    if (!saved) { finish(); return [art("⏳"), h("p", { class: "center muted" }, "Saving…")]; }
+    const t = (S.prof.targets || [])[0];
+    return [h("div", { class: "confetti", "aria-hidden": "true" }, Array.from({ length: 18 }, (_, j) => h("i", { style: `--x:${(j * 37) % 100}%;--d:${(j % 6) * 0.12}s;--c:${["var(--accent)", "var(--green)", "var(--yellow)", "var(--red)"][j % 4]}` }))),
+      art("🎉"), h("h2", { class: "serif big" }, "You're all set!"),
+      t ? h("p", { class: "say" }, "Your daily calorie budget is ", h("strong", {}, fmt(t.kcal)), ".")
+        : h("p", { class: "say" }, "Weigh in whenever you're ready and your coach will set your calorie budget."),
+      h("p", { class: "center muted" }, a.mode === "noom" ? "Your first lesson is waiting on the Today tab. Or just tell your coach what you ate." : "Just tell your coach what you ate, or snap a photo of your plate.")];
+  }
+  const cur = () => screens[i];
+  const canNext = () => !cur().ok || cur().ok();
+  function drawNav() {
+    const s = cur(), last = s.id === "end";
+    nav.replaceChildren();
+    put(nav, i > 0 && !last ? h("button", { class: "btn", type: "button", onclick: () => go(-1) }, "Back") : h("span", {}),
+      h("button", { class: "btn btn-primary next", type: "button", disabled: !canNext() || (last && !saved), onclick: () => (last ? dlg.close() : go(1)) },
+        last ? "Start coaching" : s.next || (s.skip?.() ? "Skip for now" : "Continue")));
+  }
+  function go(d) { const j = i + d; if (j < 0 || j >= screens.length || (d > 0 && !canNext())) return; i = j; draw(); }
+  function draw() {
+    top.replaceChildren(h("div", { class: "segs", "aria-label": `Step ${i + 1} of ${screens.length}` }, screens.map((_, j) => h("i", { class: j <= i ? "on" : "" }))), closeX(dlg));
+    stage.replaceChildren();
+    put(stage, cur().body());
+    stage.classList.remove("in"); void stage.offsetWidth; stage.classList.add("in");
+    stage.scrollTop = 0;
+    drawNav();
+    focusSoftly(stage.querySelector("input"));
+  }
+  dlg.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "TEXTAREA") return;
+    if (e.key === "Enter" && e.target.tagName === "INPUT") { e.preventDefault(); go(1); }
+    else if (e.target.tagName !== "INPUT" && e.key === "ArrowRight") go(1);
+    else if (e.target.tagName !== "INPUT" && e.key === "ArrowLeft") go(-1);
+  });
+  draw();
+}
+function onboardingCard() {
+  return h("div", { class: "card onbcard" },
+    h("div", { class: "art" }, h("span", {}, "👋")),
+    h("div", {}, h("strong", {}, "Let's get you set up"),
+      h("p", { class: "small muted" }, "A few quick questions so your coach knows you. About two minutes."),
+      h("button", { class: "btn btn-primary", type: "button", onclick: openOnboarding }, "Start")));
+}
+
 function openLessonList() {
   const P0 = prog();
   const dlg = sheet("All lessons");
@@ -2304,7 +2458,8 @@ function renderSettings() {
     program: [
       h("div", { class: "field" }, h("span", {}, "Program style"), modeBox),
       h("p", { class: "small muted" }, "Switching only changes how things look and how your coach talks. Your log stays the same, so you can switch back anytime."),
-      h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why)],
+      h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why),
+      h("div", {}, h("button", { class: "linkish small", type: "button", onclick: openOnboarding }, "Run the welcome setup again"))],
     health: [
       h("div", { class: "row" }, h("label", { class: "field grow" }, "Sex (for the calorie formula)", f.sex), h("label", { class: "field grow" }, "Age", f.age)),
       h("div", { class: "row" }, h("label", { class: "field grow" }, "Height, feet", f.ft), h("label", { class: "field grow" }, "inches", f.inch)),
@@ -3145,6 +3300,7 @@ function renderChat() {
   if (!coachEls) return;
   renderDaybar();
   const kids = S.chat.messages.map(savedBubble);
+  if (needsOnboarding()) kids.unshift(onboardingCard());
   if (!kids.length && !S.pending) {
     kids.push(chatRow("bot", h("div", { class: "msg bot" },
       h("p", {}, `Hi ${S.prof.name}. Tell me what you ate, send a photo of your plate or a label, log your weight, or ask how things are going.`))));
