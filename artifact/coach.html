@@ -737,6 +737,9 @@ function renderAll() {
 function LB() { return h("em", { class: "unit" }, "lb"); }
 function CAL() { return h("em", { class: "unit" }, "cal"); }
 
+// Focus a text field only with a mouse and keyboard; on phones it would pop the keyboard up uninvited.
+function focusSoftly(el) { if (!matchMedia("(pointer: coarse)").matches) el?.focus(); }
+
 let toastTimer;
 function toast(text, action) {
   const t = $("toast");
@@ -1460,7 +1463,7 @@ function openGoal() {
     P0.lastGoal ? h("p", { class: "notice" }, `Last week: ${P0.lastGoal.text}`) : null,
     h("p", { class: "small muted" }, "Make it small and specific: what, when and how often. For example: \"Walk 15 minutes after dinner on 4 days\" or \"Have a green food at every lunch.\""),
     ta, h("div", { class: "row" }, save, help));
-  ta.focus();
+  focusSoftly(ta);
 }
 async function setWeeklyGoal(text) {
   const P0 = prog();
@@ -1617,7 +1620,7 @@ function openWeigh() {
     h("p", { class: "small muted" }, "Same time each morning works best: after the bathroom, before eating. Day-to-day bounces are normal; the trend is what counts."),
     lw ? h("p", { class: "small" }, `Last: ${lw.weight} lb on ${dTiny(lw.date)}`) : null,
     h("label", { class: "field" }, "Today's weight (lb)", inp), h("div", {}, save));
-  inp.focus();
+  focusSoftly(inp);
 }
 
 // ----- the Today card -----
@@ -2986,7 +2989,7 @@ async function sendMessage() {
   E.send.disabled = false; E.cam.disabled = false; E.stop.hidden = true;
   renderChat();
   renderAll();
-  E.ta.focus();
+  focusSoftly(E.ta);
 }
 
 boot();
