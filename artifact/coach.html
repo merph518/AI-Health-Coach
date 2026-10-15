@@ -40,7 +40,12 @@ textarea:focus, input:not([type=checkbox], [type=range]):focus, select:focus { o
 /* Own caret so it sits 10px in from the right edge (the native one hugs the border). */
 select { -webkit-appearance: none; appearance: none; padding-right: 34px !important; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23c4c4c4' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; background-size: 12px 8px; }
 .row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
-.row > .grow { flex: 1 1 160px; }
+.row > .grow { flex: 1 1 160px; min-width: 0; }
+.row.top { align-items: start; }
+/* iOS draws date fields wider and taller than other inputs, with centered text; match the rest. */
+.field input[type="date"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; height: 40px; line-height: 22px; text-align: left; }
+.field input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+.field input[type="date"]::-webkit-calendar-picker-indicator { opacity: .6; }
 h2 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
 
 header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 3px solid var(--accent); margin: 0 -16px; padding-left: 16px !important; padding-right: 16px !important; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 10px; }
@@ -2704,7 +2709,7 @@ function renderSettings() {
       h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why),
       h("div", {}, h("button", { class: "linkish small", type: "button", onclick: openOnboarding }, "Run the welcome setup again"))],
     health: [
-      h("div", { class: "row" }, h("label", { class: "field grow" }, "Sex (for the calorie formula)", f.sex), h("label", { class: "field grow" }, "Date of birth", f.birth, f.age, ageNote)),
+      h("div", { class: "row top" }, h("label", { class: "field grow" }, "Sex (for the calorie formula)", f.sex), h("label", { class: "field grow" }, "Date of birth", f.birth, f.age, ageNote)),
       h("div", { class: "row" }, h("label", { class: "field grow" }, "Height, feet", f.ft), h("label", { class: "field grow" }, "inches", f.inch)),
       h("div", { class: "row" }, h("label", { class: "field grow" }, p.startDate ? `Starting weight (lb), ${dTiny(p.startDate)}` : "Starting weight (lb)", f.weight), h("label", { class: "field grow" }, "Goal weight (optional)", f.goal))],
     budget: [
