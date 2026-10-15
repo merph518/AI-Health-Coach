@@ -84,6 +84,8 @@ html[data-bgimg="on"][data-theme] .subtab, html[data-bgimg="on"][data-theme] .bt
 html[data-bgimg="on"][data-theme] .task { box-shadow: 0 2px 4px rgba(0, 0, 0, .28), 0 8px 28px rgba(0, 0, 0, .32); }
 html[data-bgimg="on"][data-theme] .avatar { box-shadow: 0 2px 6px rgba(0, 0, 0, .5); }
 html[data-bgimg="on"][data-theme] .card .btn, html[data-bgimg="on"][data-theme] .card .task, html[data-bgimg="on"][data-theme] .msg .btn { box-shadow: 0 2px 4px rgba(0, 0, 0, .16); }
+/* Headings that sit right on the page background turn white with a shadow when it's dark (see bgShade). */
+html[data-bgdark="on"] .onbg { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .6), 0 2px 12px rgba(0, 0, 0, .45); }
 html[data-bgimg="on"] .tab { text-shadow: 0 2px 4px color-mix(in srgb, var(--bg) 100%, transparent); }
 html[data-bgimg="on"] .composer { margin: 0 -16px; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top-color: color-mix(in srgb, var(--border) 60%, transparent); }
 html[data-bgimg="on"][data-theme] header.top, html[data-bgimg="on"][data-theme] .tabs, html[data-bgimg="on"] .composer { background: color-mix(in srgb, var(--bg) 80%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
@@ -2046,6 +2048,26 @@ function lum(hex) {
   const ch = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
   return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
 }
+// Marks the page background as dark (data-bgdark) so text on it can switch to white. With a picture,
+// that's its average brightness under the 30% wash of the background color laid over it.
+let shadeRun = 0;
+function bgShade(img, bg) {
+  const root = document.documentElement, run = ++shadeRun;
+  const hex = okHex(bg) || okHex(getComputedStyle(root).getPropertyValue("--bg").trim()) || (root.dataset.theme === "dark" ? "#151515" : "#f5f3ee");
+  const set = (l) => { if (run === shadeRun) { if (l < 0.18) root.dataset.bgdark = "on"; else delete root.dataset.bgdark; } };
+  set(lum(hex));
+  if (!img) return;
+  const im = new Image();
+  im.onload = () => {
+    const c = document.createElement("canvas"); c.width = c.height = 24;
+    const g = c.getContext("2d"); g.drawImage(im, 0, 0, 24, 24);
+    const px = g.getImageData(0, 0, 24, 24).data, avg = [0, 0, 0], n = px.length / 4;
+    for (let i = 0; i < px.length; i += 4) for (let k = 0; k < 3; k++) avg[k] += px[i + k] / n;
+    // Mix like CSS color-mix in srgb: 70% picture, 30% background color.
+    set(lum("#" + avg.map((v, k) => Math.round(0.7 * v + 0.3 * parseInt(hex.slice(1 + 2 * k, 3 + 2 * k), 16)).toString(16).padStart(2, "0")).join("")));
+  };
+  im.src = img;
+}
 function applyLook(look) {
   const dark = look.theme === "dark" || (look.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   const root = document.documentElement, st = root.style;
@@ -2065,6 +2087,7 @@ function applyLook(look) {
   if (b) st.setProperty("--bg", b); else st.removeProperty("--bg");
   const img = okBgImage(look.bgImage);
   if (img) { st.setProperty("--bg-img", `url("${img}")`); root.dataset.bgimg = "on"; } else { st.removeProperty("--bg-img"); delete root.dataset.bgimg; }
+  bgShade(img, b);
   const { bgImage, ...small } = look; // the picture is too big to keep in localStorage; it comes with the profile
   store.set("sp.look", JSON.stringify(small));
 }
@@ -3019,7 +3042,7 @@ function renderFeedback() {
 function renderFeedbackList() {
   if (!feedbackList) return;
   const items = S.feedback || [];
-  feedbackList.replaceChildren(...(items.length ? [h("h2", { style: "margin:4px 0 0" }, "What you've sent")] : []),
+  feedbackList.replaceChildren(...(items.length ? [h("h2", { class: "onbg", style: "margin:4px 0 0" }, "What you've sent")] : []),
     ...items.map((f) => h("div", { class: "card", style: "padding:12px 14px" },
       h("div", { class: "small muted", style: "display:flex;justify-content:space-between;gap:8px;margin-bottom:4px" },
         h("span", {}, `${(KINDS.find((k) => k[0] === f.kind) || KINDS[2])[1]} · ${f.date ? dShort(f.date) : ""}`),
