@@ -175,6 +175,11 @@ dialog.confirm .acts { display: flex; justify-content: flex-end; gap: 8px; }
 .composer .line { display: flex; gap: 8px; align-items: end; }
 .composer textarea { flex: 1; min-width: 0; resize: none; font-size: 16px; border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px; background: var(--surface); max-height: 160px; min-height: 42px; line-height: 22px; overflow-y: hidden; }
 .composer textarea::placeholder { white-space: nowrap; overflow: hidden; }
+.fbphotos { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fbthumb { position: relative; width: 72px; height: 72px; border-radius: 12px; overflow: hidden; border: 0; padding: 0; background: var(--surface-2); cursor: pointer; flex: none; }
+.fbthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fbthumb .x { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, .6); color: #fff; font-size: 14px; line-height: 22px; padding: 0; cursor: pointer; }
+.fbfull { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 12px; display: block; }
 .attached { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .attached img { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; }
 .subtabs { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -2698,17 +2703,57 @@ function budgetCard(p, lw, f) {
 const KINDS = [["bug", "Something isn't working"], ["idea", "Idea or request"], ["other", "Something else"]];
 let feedbackList = null;
 // Used by the Feedback form and the coach's send_feedback tool.
-function sendFeedback(kind, text) {
-  return withRetry(() => S.db.collection("feedback").doc(`${S.today}-${S.pid}-${uid()}`).set({
+// Photos (JPEG data URLs) go in feedback/{id}/photos/{n} first, so the entry is never "new" without them.
+const FB_MAX_PHOTOS = 3;
+async function sendFeedback(kind, text, photos = []) {
+  const id = `${S.today}-${S.pid}-${uid()}`, ref = S.db.collection("feedback").doc(id);
+  const shots = photos.filter(okBgImage).slice(0, FB_MAX_PHOTOS);
+  for (const [n, url] of shots.entries()) await withRetry(() => S.db.doc(`feedback/${id}/photos/${n}`).set({ pid: S.pid, url, at: Date.now() }));
+  return withRetry(() => ref.set({
     pid: S.pid, name: String(S.prof.name || S.pid), kind: KINDS.some((k) => k[0] === kind) ? kind : "other", text: String(text).slice(0, 4000),
-    at: Date.now(), date: S.today, device: navigator.userAgent.slice(0, 300), status: "new",
+    at: Date.now(), date: S.today, device: navigator.userAgent.slice(0, 300), status: "new", ...(shots.length ? { photos: shots.length } : {}),
   }));
+}
+function openPhoto(url) {
+  const dlg = sheet("Photo");
+  put(dlg, h("div", { class: "sheet-head" }, h("span", {}), closeX(dlg)), h("img", { class: "fbfull", src: url, alt: "Feedback photo" }));
+}
+const fbPhotoCache = new Map();
+function feedbackPhotos(f) {
+  const box = h("div", { class: "fbphotos", style: "margin-top:8px" });
+  for (let n = 0; n < Math.min(Number(f.photos) || 0, FB_MAX_PHOTOS); n++) {
+    const key = `${f.id}/${n}`, slot = h("button", { type: "button", class: "fbthumb", "aria-label": `Photo ${n + 1}` });
+    box.append(slot);
+    const show = (url) => { if (!url) return slot.remove(); slot.append(h("img", { src: url, alt: "" })); slot.onclick = () => openPhoto(url); };
+    if (fbPhotoCache.has(key)) show(fbPhotoCache.get(key));
+    else S.db.doc(`feedback/${f.id}/photos/${n}`).get().then((d) => { const url = okBgImage(d?.data?.()?.url); fbPhotoCache.set(key, url); show(url); }).catch(() => slot.remove());
+  }
+  return box;
 }
 function renderFeedback() {
   const v = $("v-feedback");
   const kind = h("select", {}, KINDS.map(([k, l]) => h("option", { value: k }, l)));
   const text = h("textarea", { rows: "5", maxlength: "4000", placeholder: "What happened, or what would make this better? The more detail the better." });
   const send = h("button", { class: "btn btn-primary", type: "submit" }, "Send to Michael");
+  let photos = [];
+  const file = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
+  const shots = h("div", { class: "fbphotos" });
+  const drawShots = () => shots.replaceChildren(...photos.map((url, n) => h("div", { class: "fbthumb" }, h("img", { src: url, alt: `Photo ${n + 1}`, onclick: () => openPhoto(url) }),
+      h("button", { type: "button", class: "x", "aria-label": `Remove photo ${n + 1}`, onclick: () => { photos.splice(n, 1); drawShots(); } }, "×"))),
+    photos.length < FB_MAX_PHOTOS ? h("button", { class: "btn", type: "button", onclick: () => file.click() }, photos.length ? "Add another" : "Add photos or screenshots") : null);
+  const addFiles = async (files) => {
+    const list = [...files].filter((f0) => f0.type.startsWith("image/"));
+    if (!list.length) return;
+    if (photos.length + list.length > FB_MAX_PHOTOS) toast(`Up to ${FB_MAX_PHOTOS} photos.`);
+    for (const f0 of list.slice(0, FB_MAX_PHOTOS - photos.length)) {
+      try { photos.push(await bgFromFile(f0)); } catch (e) { toast(e.message || "Couldn't use that picture."); }
+    }
+    drawShots();
+  };
+  file.addEventListener("change", () => { const fs = [...(file.files || [])]; file.value = ""; addFiles(fs); });
+  // Pasting a screenshot into the details box attaches it too.
+  text.addEventListener("paste", (e) => { const fs = [...(e.clipboardData?.files || [])].filter((f0) => f0.type.startsWith("image/")); if (fs.length) { e.preventDefault(); addFiles(fs); } });
+  drawShots();
   feedbackList = h("div", { class: "stack", style: "gap:10px" });
   v.replaceChildren(h("div", { class: "stack" },
     h("form", { class: "card stack", style: "gap:12px", onsubmit: async (e) => {
@@ -2717,8 +2762,8 @@ function renderFeedback() {
       if (body.length < 3) { toast("Write a little about it first."); return; }
       send.disabled = true;
       try {
-        await sendFeedback(kind.value, body);
-        text.value = "";
+        await sendFeedback(kind.value, body, photos);
+        text.value = ""; photos = []; drawShots();
         toast("Thanks! Sent to Michael.");
       } catch (err) { toast(writeError(err)); }
       send.disabled = false;
@@ -2727,6 +2772,7 @@ function renderFeedback() {
       h("p", { class: "small muted" }, "Found a bug or have an idea? It goes on Michael's to-do list."),
       h("label", { class: "field" }, "What kind?", kind),
       h("label", { class: "field" }, "Details", text),
+      h("div", { class: "field" }, h("span", {}, "Photos (optional)"), shots, file),
       h("div", {}, send)),
     feedbackList));
   renderFeedbackList();
@@ -2740,7 +2786,8 @@ function renderFeedbackList() {
         h("span", {}, `${(KINDS.find((k) => k[0] === f.kind) || KINDS[2])[1]} · ${f.date ? dShort(f.date) : ""}`),
         h("span", { style: `color:var(${f.status === "done" ? "--good" : f.status === "filed" ? "--accent" : "--ink-3"})` },
           f.status === "done" ? "Done" : f.status === "filed" ? `On the list${f.issue ? ` (#${f.issue})` : ""}` : "Sent")),
-      h("p", { style: "white-space:pre-wrap;overflow-wrap:anywhere" }, String(f.text || "")))));
+      h("p", { style: "white-space:pre-wrap;overflow-wrap:anywhere" }, String(f.text || "")),
+      f.photos ? feedbackPhotos(f) : null)));
 }
 
 // ---------- check-ins ----------

@@ -51,6 +51,9 @@ Feedback tab or the coach's `send_feedback` tool.
 
 Stock photos are Unsplash-license images published next to the page as `photos/*.webp` (source
 in `artifact/photos/`); publish them with the Artifact `files` parameter.
+- `feedback/{date}-{pid}-{id}`: {pid, name, kind bug|idea|other, text, at, date, device, status new|filed|done,
+  issue?, issueUrl?, photos? (count)}; up to 3 photos at `feedback/{id}/photos/{0..2}` as {pid, url (JPEG data URL,
+  longest side 1280px), at}, written before the entry. See FILE_FEEDBACK.md for filing them as GitHub issues.
 - `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, error?}],
   checkins [slot times already shown]
 
