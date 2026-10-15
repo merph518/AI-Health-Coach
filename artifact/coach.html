@@ -70,7 +70,9 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .swatch.custom { display: inline-grid; place-items: center; background: conic-gradient(#f05252, #f0b429, #2f9e4e, #0e7490, #4f46e5, #d6457a, #f05252); color: #fff; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,.5); overflow: hidden; }
 .swatch.custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
 .bgthumb { width: 56px; height: 56px; border-radius: 12px; background: center / cover; border: 1px solid var(--border); }
-html[data-bgimg="on"] body { background-image: linear-gradient(color-mix(in srgb, var(--bg) 30%, transparent), color-mix(in srgb, var(--bg) 30%, transparent)), var(--bg-img); background-size: cover; background-position: center; background-attachment: fixed; }
+/* The picture sits on its own fixed layer the size of the screen, so it never scrolls or stretches
+   to the page's length (phones ignore background-attachment: fixed). */
+html[data-bgimg="on"] body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 100lvh; z-index: -1; pointer-events: none; background-image: linear-gradient(color-mix(in srgb, var(--bg) 30%, transparent), color-mix(in srgb, var(--bg) 30%, transparent)), var(--bg-img); background-size: cover; background-position: center; }
 html[data-bgimg="on"][data-theme] header.top, html[data-bgimg="on"][data-theme] .tabs { background: color-mix(in srgb, var(--bg) 80%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .avatar .emo { font-size: 19px; line-height: 1; }
 .avatar.sm .emo { font-size: 14px; }
