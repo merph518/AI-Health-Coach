@@ -18,7 +18,8 @@ Feedback tab or the coach's `send_feedback` tool.
 ## Data layout (artifact db)
 
 - `people/{michael|leah|eve}`: profile (name, mode noom|classic, activity, eatBackPct,
-  timezone, sex, age, ageAsOf, heightIn, startWeight, startDate, goalWeight, pace,
+  timezone, sex, birthDate (YYYY-MM-DD; age is computed from it, and the coach wishes them a
+  happy birthday on the day), age and ageAsOf (older profiles without a birth date), heightIn, startWeight, startDate, goalWeight, pace,
   bigPicture, coachTier, coachStyle brief|balanced|detailed, coachTone warm|direct|upbeat|calm|coach,
   activityLevel sedentary|light|moderate|very (maintenance multiplier 1.2/1.375/1.55/1.725),
   stepGoal (Activity tab; default 6000, step task shows only when activity tracking is on),

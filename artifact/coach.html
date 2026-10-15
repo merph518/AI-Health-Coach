@@ -483,7 +483,22 @@ function dailyTarget({ sex, lb, inches, age, pace, level }) {
   const raw = tdee - (p * 3500) / 7;
   return { tdee: Math.round(tdee), target: Math.round(Math.max(raw, FLOOR[sex])), pace: p, floored: raw < FLOOR[sex] };
 }
+// birthDate (YYYY-MM-DD) wins; older profiles only have age as of ageAsOf.
+const okBirth = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || "") && !isNaN(Date.parse(v));
+function ageFrom(birth, date) {
+  if (!okBirth(birth)) return null;
+  const age = Number(date.slice(0, 4)) - Number(birth.slice(0, 4)) - (date.slice(5) < birth.slice(5) ? 1 : 0);
+  return age >= 0 && age <= 130 ? age : null;
+}
+// Feb 29 birthdays fall on Feb 28 in other years.
+function isBirthday(prof, date) {
+  const b = prof?.birthDate;
+  if (!okBirth(b)) return false;
+  const md = b.slice(5), y = Number(date.slice(0, 4)), leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  return date.slice(5) === (md === "02-29" && !leap ? "02-28" : md) && date > b;
+}
 function ageNow(prof, date) {
+  if (okBirth(prof.birthDate)) return ageFrom(prof.birthDate, date);
   if (prof.age == null) return null;
   if (!prof.ageAsOf) return prof.age;
   const yrs = (Date.parse(date) - Date.parse(prof.ageAsOf)) / (365.25 * 864e5);
@@ -1647,12 +1662,12 @@ function openOnboarding() {
   const top = h("div", { class: "ptop" }), stage = h("div", { class: "stage" }), nav = h("div", { class: "pnav" });
   put(dlg, top, stage, nav);
   const a = {
-    mode: p.mode === "classic" ? "classic" : "noom", why: p.bigPicture || "", sex: p.sex || "", age: ageNow(p, today) ?? "",
+    mode: p.mode === "classic" ? "classic" : "noom", why: p.bigPicture || "", sex: p.sex || "", birth: p.birthDate || "",
     ft: p.heightIn ? Math.floor(p.heightIn / 12) : "", inch: p.heightIn ? +(p.heightIn % 12).toFixed(1) : "", weight: "", goal: p.goalWeight ?? "",
     pace: String(p.pace ?? 1), level: p.activityLevel || "", tone: p.coachTone || "warm", style: p.coachStyle || "balanced", look: p.coachAvatar || "sprout",
   };
   const num = (v) => (v === "" || v == null ? NaN : Number(v));
-  const okAge = () => num(a.age) >= 18 && num(a.age) <= 100;
+  const okAge = () => { const n = ageFrom(a.birth, today); return n != null && n >= 18 && n <= 100; };
   const inches = () => num(a.ft) * 12 + (Number(a.inch) || 0);
   const okHeight = () => inches() >= 48 && inches() <= 96;
   const okWeight = (v) => num(v) >= 60 && num(v) <= 800;
@@ -1673,8 +1688,10 @@ function openOnboarding() {
       (() => { const ta = h("textarea", { rows: "4", maxlength: "600", placeholder: "For example: to have more energy with my kids, or to feel good at the beach this summer", value: a.why }); ta.addEventListener("input", () => { a.why = ta.value; }); return ta; })(),
       h("p", { class: "small muted center" }, "Your coach will remind you of this on hard days. Optional.")] },
     !p.sex && { id: "sex", body: () => [art("🧬"), h("p", { class: "say" }, "For the calorie formula, which should we use?"), pick("sex", [["female", "Female"], ["male", "Male"]])], ok: () => !!a.sex },
-    ageNow(p, today) == null && { id: "age", body: () => [art("🎂"), h("p", { class: "say" }, "How old are you?"),
-      field("Age", input("age", { type: "number", inputmode: "numeric", min: "18", max: "100", placeholder: "Years" }))], ok: okAge },
+    !okBirth(p.birthDate) && { id: "age", body: () => [art("🎂"), h("p", { class: "say" }, "When's your birthday?"),
+      field("Date of birth", input("birth", { type: "date", max: addDays(today, -18 * 365) })),
+      h("p", { class: "small muted center" }, "Used for your age in the calorie formula, and so your coach can wish you a happy birthday.")],
+      ok: () => okAge() || (a.birth === "" && ageNow(p, today) != null), skip: () => a.birth === "" },
     !p.heightIn && { id: "height", body: () => [art("📏"), h("p", { class: "say" }, "How tall are you?"),
       h("div", { class: "row" }, h("label", { class: "field grow" }, "Feet", input("ft", { type: "number", inputmode: "numeric", min: "4", max: "7" })),
         h("label", { class: "field grow" }, "Inches", input("inch", { type: "number", inputmode: "decimal", min: "0", max: "11.5", step: "0.5" })))], ok: okHeight },
@@ -1704,7 +1721,7 @@ function openOnboarding() {
     x.mode = a.mode;
     x.bigPicture = a.why.trim().slice(0, 600);
     if (a.sex) x.sex = a.sex;
-    if (okAge() && ageNow(p, today) == null) { x.age = num(a.age); x.ageAsOf = today; }
+    if (okAge()) { x.birthDate = a.birth; x.age = ageFrom(a.birth, today); x.ageAsOf = today; }
     if (okHeight() && !p.heightIn) x.heightIn = inches();
     if (okWeight(a.goal)) x.goalWeight = num(a.goal);
     if (!(p.targets || []).length) x.pace = Number(a.pace);
@@ -2356,7 +2373,8 @@ function renderSettings() {
   const f = {
     mode: { value: "noom" },
     sex: h("select", {}, h("option", { value: "" }, "Choose"), h("option", { value: "female" }, "Female"), h("option", { value: "male" }, "Male")),
-    age: h("input", { type: "number", inputmode: "numeric", min: "18", max: "100", value: age0 ?? "" }),
+    age: h("input", { type: "hidden", value: age0 ?? "" }),
+    birth: h("input", { type: "date", max: S.today, value: okBirth(p.birthDate) ? p.birthDate : "" }),
     ft: h("input", { type: "number", inputmode: "numeric", min: "4", max: "7", value: p.heightIn ? Math.floor(p.heightIn / 12) : "" }),
     inch: h("input", { type: "number", inputmode: "decimal", min: "0", max: "11.5", step: "0.5", value: p.heightIn ? +(p.heightIn % 12).toFixed(1) : "" }),
     weight: h("input", { type: "number", inputmode: "decimal", step: "0.1", min: "60", max: "800", value: p.startWeight ?? lw?.weight ?? "" }),
@@ -2423,6 +2441,15 @@ function renderSettings() {
   const showTone = () => { toneHint.textContent = optText(COACH_TONES, f.tone.value, "warm") + " " + optText(COACH_STYLES, f.style.value, "balanced") + (S.pid !== "michael" ? " Either way, your coach stays positive and celebrates your wins." : ""); };
   f.tone.addEventListener("input", showTone); f.style.addEventListener("input", showTone); showTone();
   f.activity.checked = !!p.activity;
+  // Age comes from the birth date; the hidden age field feeds the calorie math below.
+  const ageNote = h("span", { class: "small muted" });
+  const syncAge = () => {
+    const n = f.birth.value ? ageFrom(f.birth.value, S.today) : age0;
+    f.age.value = n ?? "";
+    ageNote.textContent = n == null ? "" : f.birth.value ? `Age ${n}` : `Age ${n}. Add your birth date to keep it current.`;
+  };
+  f.birth.addEventListener("input", () => { syncAge(); f.age.dispatchEvent(new Event("input")); });
+  syncAge();
   const hasTarget = (p.targets || []).length > 0;
   const preview = h("p", { class: "small muted" });
   const compute = () => {
@@ -2461,7 +2488,7 @@ function renderSettings() {
       h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why),
       h("div", {}, h("button", { class: "linkish small", type: "button", onclick: openOnboarding }, "Run the welcome setup again"))],
     health: [
-      h("div", { class: "row" }, h("label", { class: "field grow" }, "Sex (for the calorie formula)", f.sex), h("label", { class: "field grow" }, "Age", f.age)),
+      h("div", { class: "row" }, h("label", { class: "field grow" }, "Sex (for the calorie formula)", f.sex), h("label", { class: "field grow" }, "Date of birth", f.birth, f.age, ageNote)),
       h("div", { class: "row" }, h("label", { class: "field grow" }, "Height, feet", f.ft), h("label", { class: "field grow" }, "inches", f.inch)),
       h("div", { class: "row" }, h("label", { class: "field grow" }, p.startDate ? `Starting weight (lb), ${dTiny(p.startDate)}` : "Starting weight (lb)", f.weight), h("label", { class: "field grow" }, "Goal weight (optional)", f.goal))],
     budget: [
@@ -2512,7 +2539,7 @@ function renderSettings() {
           x.stepGoal = sg >= 1000 && sg <= 50000 ? sg : null;
         }
         if (f.sex.value) x.sex = f.sex.value;
-        if (Number(f.age.value) >= 18 && Number(f.age.value) <= 100) { x.age = Number(f.age.value); x.ageAsOf = today; }
+        if (Number(f.age.value) >= 18 && Number(f.age.value) <= 100) { x.age = Number(f.age.value); x.ageAsOf = today; if (okBirth(f.birth.value)) x.birthDate = f.birth.value; }
         const inches = Number(f.ft.value) * 12 + Number(f.inch.value || 0);
         if (inches >= 48 && inches <= 96) x.heightIn = inches;
         const goal = Number(f.goal.value);
@@ -2787,6 +2814,7 @@ function context(message) {
   const p = S.prof, today = S.today, d = dayView(today), y = dayView(addDays(today, -1));
   const when = new Intl.DateTimeFormat("en-US", { timeZone: tz(), weekday: "long", hour: "numeric", minute: "2-digit" }).format(new Date());
   const L = [`PERSON: ${p.name}. Today is ${today} (${when}).`];
+  if (isBirthday(p, today)) L.push(`TODAY IS ${p.name.toUpperCase()}'S BIRTHDAY (turning ${ageNow(p, today)}). Wish them a happy birthday in your first reply today if the chat hasn't yet, and be relaxed about birthday treats: one day doesn't undo progress.`);
   if (p.sex && p.heightIn) L.push(`Profile: ${p.sex}, ${p.heightIn} in${ageNow(p, today) ? `, age ${ageNow(p, today)}` : ""}${p.goalWeight ? `, goal ${p.goalWeight} lb` : ""}.${p.startWeight ? ` Started at ${p.startWeight} lb on ${p.startDate}.` : ""}`);
   if (p.bigPicture) L.push(`Their reason ("big picture"): ${p.bigPicture}`);
   if (d.base != null) {
@@ -3300,6 +3328,9 @@ function renderChat() {
   if (!coachEls) return;
   renderDaybar();
   const kids = S.chat.messages.map(savedBubble);
+  if (isBirthday(S.prof, S.today)) kids.unshift(chatRow("bot", h("div", { class: "msg bot bday" },
+    h("p", {}, `🎂 Happy birthday, ${String(S.prof.name || "").split(" ")[0]}! 🎉`),
+    h("p", {}, "Enjoy your day. Have the cake, log it if you like, and don't worry about the numbers. One day never undoes your progress."))));
   if (needsOnboarding()) kids.unshift(onboardingCard());
   if (!kids.length && !S.pending) {
     kids.push(chatRow("bot", h("div", { class: "msg bot" },
