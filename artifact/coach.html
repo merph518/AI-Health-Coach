@@ -302,8 +302,7 @@ html[data-photos="off"] .banner { display: none; }
 .task { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--surface-2); border: 0; width: 100%; text-align: left; color: var(--ink); cursor: pointer; font: inherit; }
 html[data-theme="light"] .task { background: var(--surface); box-shadow: inset 0 0 0 1px var(--border); }
 .task:disabled { cursor: default; }
-.task .ic { flex: none; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
-html[data-theme="light"] .p-leah .task .ic, html[data-theme="light"].p-leah .task .ic { color: #9a6a00; }
+.task .ic { flex: none; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--link, var(--accent)); }
 .task.done .ic { background: var(--good); color: #fff; }
 .task .ic svg { width: 20px; height: 20px; }
 .task .tx { flex: 1; min-width: 0; display: grid; gap: 2px; }
@@ -2338,8 +2337,8 @@ async function toggleMeds() {
 }
 function taskRow({ ic, title, sub, done, meter, onclick, thumb, pop }) {
   return h("li", {}, h("button", { type: "button", class: `task${done ? " done" : ""}${pop != null ? " pop" : ""}`, style: pop != null ? `--el:${pop}ms` : null, onclick, disabled: !onclick },
-    thumb ? photoImg(thumb, "thumb") : null,
     h("span", { class: "ic" }, icon(done ? "check" : ic), pop != null ? burst() : null),
+    thumb ? photoImg(thumb, "thumb") : null,
     h("span", { class: "tx" }, h("strong", {}, title), sub ? h("span", {}, sub) : null,
       meter != null ? h("div", { class: "meter" }, h("div", { style: `width:${Math.min(100, Math.round(meter * 100))}%` })) : null),
     onclick ? h("span", { class: "go", "aria-hidden": "true" }, "›") : null));
