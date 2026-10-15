@@ -63,6 +63,13 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .mrow > .msg, .mrow > .mwrap { max-width: none; min-width: 0; }
 .picker .btn { display: flex; align-items: center; gap: 12px; }
 .avrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.avatar .emo { font-size: 19px; line-height: 1; }
+.avatar.sm .emo { font-size: 14px; }
+.avchoices { display: flex; flex-wrap: wrap; gap: 8px; }
+.avpick { border: 2px solid transparent; background: none; padding: 2px; border-radius: 50%; cursor: pointer; display: grid; }
+.avpick .avatar { width: 40px; height: 40px; }
+.avpick .avatar .emo { font-size: 23px; }
+.avpick[aria-checked="true"] { border-color: var(--accent); }
 .combo { position: relative; }
 .combo input { width: 100%; box-sizing: border-box; }
 .suggest { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 6px); margin: 0; padding: 6px; list-style: none; max-height: min(300px, 45vh); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 10px 28px rgba(0, 0, 0, .18); }
@@ -777,7 +784,17 @@ function viewTabs(view) {
 // shrunk to a small JPEG and kept in their profile as a data URL. Otherwise it's their initial.
 const COACH_AVATAR = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#2f9e6e"/><path d="M16 25.5v-9" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M16 17.5C16 13 13 9.5 7.5 9.5c0 4.5 3 8 8.5 8z" fill="#fff"/><path d="M16 15.5c0-4.5 3-8 8.5-8 0 4.5-3 8-8.5 8z" fill="#d7f5e6"/></svg>';
 const okAvatar = (u) => typeof u === "string" && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 200000 ? u : null;
-function coachAvatar() { const s = h("span", { class: "avatar coach", title: "Coach" }); s.innerHTML = COACH_AVATAR; return s; }
+// Each person picks their coach's look (Settings → Your coach): the sprout, an emoji buddy, or a photo.
+const COACH_LOOKS = [["sprout", "🌱", "#2f9e6e"], ["owl", "🦉", "#8b5e34"], ["bear", "🐻", "#a0522d"], ["fox", "🦊", "#e8762c"], ["panda", "🐼", "#4b5563"],
+  ["turtle", "🐢", "#3f8f5a"], ["cat", "🐱", "#d4a017"], ["dog", "🐶", "#b7791f"], ["bunny", "🐰", "#d46a9f"], ["robot", "🤖", "#4f6bd8"], ["runner", "🏃", "#2b8fbf"], ["star", "⭐", "#6d4fc2"]];
+function coachAvatar(look = S.prof?.coachAvatar, size = "") {
+  const s = h("span", { class: `avatar coach ${size}`, title: "Coach", "aria-hidden": "true" });
+  const url = okAvatar(look), preset = COACH_LOOKS.find((x) => x[0] === look);
+  if (url) s.append(h("img", { src: url, alt: "" }));
+  else if (preset && preset[0] !== "sprout") { s.style.background = preset[2]; s.append(h("span", { class: "emo" }, preset[1])); }
+  else s.innerHTML = COACH_AVATAR;
+  return s;
+}
 function personAvatar(pid, size = "") {
   const p = S.people[pid] || {}, url = okAvatar(p.avatar), name = String(p.name || pid || "?");
   return h("span", { class: `avatar ${size} p-${pid}`, "aria-hidden": "true" },
@@ -793,6 +810,27 @@ async function avatarFromFile(file) {
     c.getContext("2d").drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, N, N);
     return c.toDataURL("image/jpeg", 0.85);
   } finally { URL.revokeObjectURL(url); }
+}
+function coachAvatarSetting() {
+  const box = h("div", { class: "stack", style: "gap:10px" });
+  const file = h("input", { type: "file", accept: "image/*", hidden: true });
+  const save = async (v) => {
+    try { await mutateProfile((p) => { if (v && v !== "sprout") p.coachAvatar = v; else delete p.coachAvatar; }); toast("Coach look saved."); draw(); refreshAvatars(); }
+    catch (e) { toast(writeError(e)); }
+  };
+  const cur = () => okAvatar(S.prof.coachAvatar) ? "photo" : COACH_LOOKS.some((x) => x[0] === S.prof.coachAvatar) ? S.prof.coachAvatar : "sprout";
+  const draw = () => box.replaceChildren(
+    h("div", { class: "avchoices", role: "radiogroup", "aria-label": "Coach avatar" },
+      COACH_LOOKS.map(([k, emo]) => h("button", { type: "button", class: "avpick", role: "radio", "aria-checked": String(cur() === k), "aria-label": k, title: k, onclick: () => save(k) }, coachAvatar(k))),
+      okAvatar(S.prof.coachAvatar) ? h("button", { type: "button", class: "avpick", role: "radio", "aria-checked": "true", "aria-label": "Your photo" }, coachAvatar(S.prof.coachAvatar)) : null),
+    h("div", { class: "avrow" }, h("button", { class: "btn", type: "button", onclick: () => file.click() }, okAvatar(S.prof.coachAvatar) ? "Change coach photo" : "Upload a coach photo"), file));
+  file.addEventListener("change", async () => {
+    const f0 = file.files?.[0]; file.value = "";
+    if (!f0) return;
+    try { await save(await avatarFromFile(f0)); } catch (e) { toast(e.message || "Couldn't use that picture."); }
+  });
+  draw();
+  return h("div", { class: "field" }, h("span", {}, "Your coach's avatar"), box);
 }
 function avatarSetting() {
   const box = h("div", { class: "avrow" });
@@ -2188,6 +2226,7 @@ function renderSettings() {
     coach: [
       h("div", { class: "row" }, h("label", { class: "field grow" }, "Reply style", f.style), h("label", { class: "field grow" }, "Tone", f.tone)),
       toneHint,
+      coachAvatarSetting(),
       h("label", { class: "field" }, "Custom instructions (optional)", f.notes),
       h("label", { class: "field" }, "Coach speed", f.tier)],
     look: [
