@@ -2349,9 +2349,9 @@ function basicChecklist(d) {
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
   const W = waterPlan(), water = waterCount(S.days[S.today], W);
   let tasks = [
-    { ic: "meal", title: meals.length === 3 ? "Meals logged" : "Log your meals", sub: `${meals.length} of 3 meals logged today${d.items.length ? ` · ${fmt(d.cal)} cal` : ""}`, done: meals.length === 3, meter: meals.length / 3, onclick: logWithCoach },
-    d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
     medsTask(),
+    d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
+    { ic: "meal", title: meals.length === 3 ? "Meals logged" : "Log your meals", sub: `${meals.length} of 3 meals logged today${d.items.length ? ` · ${fmt(d.cal)} cal` : ""}`, done: meals.length === 3, meter: meals.length / 3, onclick: logWithCoach },
     { ic: "drop", title: water >= W.goal ? "Water goal met" : "Drink water", sub: `${water} of ${W.goal} ${waterWord(W, W.goal)}`, done: water >= W.goal, meter: water / W.goal, onclick: openWater },
   ];
   if (S.prof.activity && d.steps != null) {
@@ -2373,9 +2373,9 @@ function programCard(d) {
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
   const W = waterPlan(), water = waterCount(S.days[S.today], W);
   let tasks = [
-    { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: logWithCoach },
-    d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
     medsTask(),
+    d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
+    { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: logWithCoach },
   ];
   if (P0.finished) tasks.push({ ic: "book", title: "Program complete", sub: "Every lesson is done. Amazing!", done: true, onclick: openLessonList });
   else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `${(() => { const r = lessonProgress(lessonKey(P0.tk, P0.next.n)); return r ? `Pick up where you left off · screen ${r.i + 1} of ${r.n}` : "Today's lesson · about 5 minutes"; })()}${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
