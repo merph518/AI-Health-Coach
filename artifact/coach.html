@@ -1532,7 +1532,7 @@ function programCard(d) {
   else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `Today's lesson · about 5 minutes${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
   else tasks.push({ ic: "book", title: "Lesson done", sub: P0.doneToday.length ? P0.doneToday[0].title || "Today's lesson" : "All caught up. Next lesson tomorrow.", done: true, onclick: openLessonList });
   tasks.push({ ic: "drop", title: water >= WATER_GOAL ? "Water goal met" : "Drink water", sub: `${water} of ${WATER_GOAL} glasses`, done: water >= WATER_GOAL, meter: water / WATER_GOAL, onclick: openWater });
-  if (d.steps != null) {
+  if (S.prof.activity && d.steps != null) {
     const goal = Number(S.prof.stepGoal) || 6000;
     tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
   }
@@ -1756,6 +1756,7 @@ function renderSettings() {
     tone: h("select", {}, COACH_TONES.map(([k, l]) => h("option", { value: k }, l))),
     notes: h("textarea", { rows: "4", maxlength: "1000", placeholder: "Anything else your coach should know or do. For example: call me Mike, suggest vegetarian options, don't mention my weight unless I ask." }),
     activity: h("input", { type: "checkbox" }),
+    steps: h("input", { type: "number", inputmode: "numeric", min: "1000", max: "50000", step: "500", value: p.stepGoal ?? "", placeholder: "6000" }),
     // Only Michael tracks activity; the option stays visible if someone already has it on.
     showActivity: S.pid === "michael" || !!p.activity,
   };
@@ -1833,6 +1834,7 @@ function renderSettings() {
       h("p", { class: "small muted" }, "Changes show right away; Save keeps them for you on every device. Photos are free stock photos from Unsplash.")],
     activity: [
       h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
+      h("label", { class: "field" }, "Daily step goal", f.steps),
       h("p", { class: "small muted" }, "Active calories, exercise minutes and steps come in from Health Auto Export by email. Ask the coach to \"import my health data\" anytime.")],
   };
   v.replaceChildren(h("div", { class: "stack" }, h("form", { class: "card stack", novalidate: true, onsubmit: async (e) => {
@@ -1853,7 +1855,11 @@ function renderSettings() {
         x.coachStyle = f.style.value;
         x.coachTone = f.tone.value;
         x.coachNotes = f.notes.value.trim().slice(0, 1000);
-        if (f.showActivity) x.activity = f.activity.checked;
+        if (f.showActivity) {
+          x.activity = f.activity.checked;
+          const sg = Math.round(Number(f.steps.value));
+          x.stepGoal = sg >= 1000 && sg <= 50000 ? sg : null;
+        }
         if (f.sex.value) x.sex = f.sex.value;
         if (Number(f.age.value) >= 18 && Number(f.age.value) <= 100) { x.age = Number(f.age.value); x.ageAsOf = today; }
         const inches = Number(f.ft.value) * 12 + Number(f.inch.value || 0);

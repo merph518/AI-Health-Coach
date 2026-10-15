@@ -21,6 +21,7 @@ Feedback tab or the coach's `send_feedback` tool.
   timezone, sex, age, ageAsOf, heightIn, startWeight, startDate, goalWeight, pace,
   bigPicture, coachTier, coachStyle brief|balanced|detailed, coachTone warm|direct|upbeat|calm|coach,
   activityLevel sedentary|light|moderate|very (maintenance multiplier 1.2/1.375/1.55/1.725),
+  stepGoal (Activity tab; default 6000, step task shows only when activity tracking is on),
   theme light|dark|system and photos (Appearance; default light with photos),
   coachNotes (custom instructions), targets: [{from, kcal, basis}]). For Leah and Eve the
   prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
