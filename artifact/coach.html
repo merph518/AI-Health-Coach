@@ -890,7 +890,6 @@ function renderSettings() {
     activity: h("input", { type: "checkbox" }),
     // Only Michael tracks activity; the option stays visible if someone already has it on.
     showActivity: S.pid === "michael" || !!p.activity,
-    recalc: h("input", { type: "checkbox" }),
   };
   f.mode.value = p.mode || "noom";
   f.sex.value = p.sex || "";
@@ -905,7 +904,6 @@ function renderSettings() {
   f.tone.addEventListener("input", showTone); f.style.addEventListener("input", showTone); showTone();
   f.activity.checked = !!p.activity;
   const hasTarget = (p.targets || []).length > 0;
-  f.recalc.checked = !hasTarget;
   const preview = h("p", { class: "small muted" });
   const compute = () => {
     const sex = f.sex.value, age = Number(f.age.value), inches = Number(f.ft.value) * 12 + Number(f.inch.value || 0), lb = lw?.weight ?? Number(f.weight.value), pace = Number(f.pace.value);
@@ -915,13 +913,12 @@ function renderSettings() {
   const update = () => {
     const c = compute();
     preview.textContent = c
-      ? `${lw ? `Using your latest weigh-in, ${lw.weight} lb on ${dTiny(lw.date)}.` : "Using your starting weight."} Maintenance is about ${fmt(c.tdee)} cal a day. For ${c.pace} lb a week, ${f.recalc.checked ? "your new" : "a recalculated"} target would be ${fmt(c.target)}${c.floored ? " (held at the safe minimum)" : ""}.`
+      ? `${lw ? `Using your latest weigh-in, ${lw.weight} lb on ${dTiny(lw.date)}.` : "Using your starting weight."} Maintenance is about ${fmt(c.tdee)} cal a day. For ${c.pace} lb a week, your target will be ${fmt(c.target)}${c.floored ? " (held at the safe minimum)" : ""}.`
       : "Fill in sex, age, height and weight to calculate a calorie target.";
   };
-  for (const el of [f.sex, f.age, f.ft, f.inch, f.weight, f.pace, f.recalc]) el.addEventListener("input", update);
+  for (const el of [f.sex, f.age, f.ft, f.inch, f.weight, f.pace]) el.addEventListener("input", update);
   update();
   const save = h("button", { class: "btn btn-primary", type: "submit" }, "Save");
-  const current = baseFor(S.today);
   v.replaceChildren(h("form", { class: "card stack", novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
     // Save whatever is filled in; the calorie target waits until the formula has what it needs.
@@ -945,14 +942,14 @@ function renderSettings() {
         const goal = Number(f.goal.value);
         x.goalWeight = goal >= 60 && goal <= 800 ? goal : null;
         if (Number(f.weight.value) >= 60 && Number(f.weight.value) <= 800) { x.startWeight = Number(f.weight.value); x.startDate ||= today; }
-        if (f.recalc.checked && c) {
+        if (!hasTarget && c) {
           const t = (x.targets || []).filter((t) => t.from !== today);
           t.push({ from: today, kcal: c.target, basis: `Mifflin-St Jeor: ${c.sex}, ${c.lb} lb, ${c.inches} in, age ${c.age}, sedentary x1.2 = ${fmt(c.tdee)} maintenance, minus ${c.pace} lb/week${c.floored ? ", held at the floor" : ""}.` });
           x.targets = t.sort((a, b) => a.from.localeCompare(b.from));
         }
       });
       if (Number(f.weight.value) >= 60 && Number(f.weight.value) <= 800 && !S.days[today]?.weight && !lw) await setWeight(today, Number(f.weight.value));
-      toast(f.recalc.checked && !c ? "Saved. Add sex, age, height and weight to set a calorie target." : "Saved.");
+      toast(!hasTarget && !c ? "Saved. Add sex, age, height and weight to set a calorie target." : "Saved.");
       setTimeout(() => { renderSettings(); buildTodayForms(); }, 300);
     } catch (err) { toast(writeError(err)); }
     save.disabled = false;
@@ -963,8 +960,7 @@ function renderSettings() {
     h("div", { class: "row" }, h("label", { class: "field grow" }, "Height, feet", f.ft), h("label", { class: "field grow" }, "inches", f.inch)),
     h("div", { class: "row" }, h("label", { class: "field grow" }, p.startDate ? `Starting weight (lb), ${dTiny(p.startDate)}` : "Starting weight (lb)", f.weight), h("label", { class: "field grow" }, "Goal weight (optional)", f.goal)),
     h("label", { class: "field" }, "Pace", f.pace),
-    h("div", { class: "notice" }, current != null ? `Current daily target: ${fmt(current)}.` : "No calorie target yet.", " ", preview),
-    h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.recalc, current != null ? "Recalculate my target from these numbers" : "Set my target from these numbers"),
+    !hasTarget && h("div", { class: "notice" }, "No calorie target yet. Saving sets it. ", preview),
     h("label", { class: "field" }, "Why this matters to you (the coach uses this)", f.why),
     h("h2", { style: "margin:8px 0 0" }, "Your coach"),
     h("div", { class: "row" }, h("label", { class: "field grow" }, "Reply style", f.style), h("label", { class: "field grow" }, "Tone", f.tone)),
@@ -972,7 +968,62 @@ function renderSettings() {
     h("label", { class: "field" }, "Custom instructions (optional)", f.notes),
     h("label", { class: "field" }, "Coach speed", f.tier),
     f.showActivity && h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
-    h("div", {}, save)));
+    h("div", {}, save)), hasTarget ? budgetCard(p, lw, f) : "");
+}
+
+// Daily calorie budget: recalculate from any weight, or set it by hand. Starts today; past
+// days keep the budget they had, and the starting weight is never touched.
+async function setBudget(kcal, basis) {
+  const today = S.today;
+  await mutateProfile((x) => {
+    const t = (x.targets || []).filter((t) => t.from !== today);
+    t.push({ from: today, kcal: Math.round(kcal), basis });
+    x.targets = t.sort((a, b) => a.from.localeCompare(b.from));
+  });
+  toast(`Daily budget set to ${fmt(Math.round(kcal))} cal, starting today.`);
+  setTimeout(() => { renderSettings(); buildTodayForms(); }, 300);
+}
+function budgetCard(p, lw, f) {
+  const cur = [...(p.targets || [])].sort((a, b) => a.from.localeCompare(b.from)).filter((t) => t.from <= S.today).pop() || p.targets[0];
+  const wt = h("input", { type: "number", inputmode: "decimal", step: "0.1", min: "60", max: "800", value: lw?.weight ?? p.startWeight ?? "" });
+  const man = h("input", { type: "number", inputmode: "numeric", step: "10", min: "1000", max: "5000", placeholder: "e.g. 1800" });
+  const calc = () => {
+    const sex = f.sex.value, age = Number(f.age.value), inches = Number(f.ft.value) * 12 + Number(f.inch.value || 0), lb = Number(wt.value), pace = Number(f.pace.value);
+    if (!sex || !(age >= 18 && age <= 100) || !(inches >= 48 && inches <= 96) || !(lb >= 60 && lb <= 800)) return null;
+    return { sex, age, inches, lb, pace, ...dailyTarget({ sex, lb, inches, age, pace }) };
+  };
+  const out = h("p", { class: "small muted" });
+  const recalc = h("button", { class: "btn", type: "button", onclick: async () => {
+    const c = calc(); if (!c) return;
+    recalc.disabled = true;
+    try { await setBudget(c.target, `Mifflin-St Jeor: ${c.sex}, ${c.lb} lb, ${c.inches} in, age ${c.age}, sedentary x1.2 = ${fmt(c.tdee)} maintenance, minus ${c.pace} lb/week${c.floored ? ", held at the floor" : ""}.`); }
+    catch (err) { toast(writeError(err)); recalc.disabled = false; }
+  } }, "Use this budget");
+  const show = () => {
+    const c = calc();
+    recalc.disabled = !c;
+    out.textContent = c ? `At ${c.lb} lb, maintenance is about ${fmt(c.tdee)} cal. For ${c.pace} lb a week: ${fmt(c.target)} cal a day${c.floored ? " (held at the safe minimum)" : ""}.` : "Fill in sex, age, height and a weight to calculate.";
+  };
+  for (const el of [wt, f.sex, f.age, f.ft, f.inch, f.pace]) el.addEventListener("input", show);
+  show();
+  const setMan = h("button", { class: "btn", type: "button", onclick: async () => {
+    const k = Math.round(Number(man.value));
+    if (!(k >= 1000 && k <= 5000)) { toast("Enter a budget between 1,000 and 5,000."); return; }
+    setMan.disabled = true;
+    const floor = FLOOR[f.sex.value || p.sex];
+    try { await setBudget(k, `Set by hand${floor && k < floor ? ` (below the usual ${fmt(floor)} minimum)` : ""}.`); }
+    catch (err) { toast(writeError(err)); setMan.disabled = false; }
+  } }, "Set budget");
+  return h("div", { class: "card stack" },
+    h("h2", {}, "Daily calorie budget"),
+    h("div", { class: "notice" }, `Now ${fmt(cur.kcal)} cal a day, since ${dTiny(cur.from)}.`, cur.basis ? h("div", { class: "small muted" }, cur.basis) : null),
+    h("h3", { style: "margin:4px 0 0" }, "Recalculate"),
+    h("p", { class: "small muted" }, "Uses the sex, age, height and pace above. Your starting weight stays the same."),
+    h("label", { class: "field" }, lw ? `Weight to use (lb), latest weigh-in ${dTiny(lw.date)}` : "Weight to use (lb)", wt),
+    out, h("div", {}, recalc),
+    h("h3", { style: "margin:4px 0 0" }, "Set it yourself"),
+    h("div", { class: "row", style: "align-items:flex-end" }, h("label", { class: "field grow" }, "Calories a day", man), setMan),
+    h("p", { class: "small muted" }, "Changes start today. Past days keep the budget they had."));
 }
 
 // ---------- Feedback ----------
