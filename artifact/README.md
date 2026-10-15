@@ -20,11 +20,18 @@ Feedback tab or the coach's `send_feedback` tool.
 - `people/{michael|leah|eve}`: profile (name, mode noom|classic, activity, eatBackPct,
   timezone, sex, age, ageAsOf, heightIn, startWeight, startDate, goalWeight, pace,
   bigPicture, coachTier, coachStyle brief|balanced|detailed, coachTone warm|direct|upbeat|calm|coach,
+  activityLevel sedentary|light|moderate|very (maintenance multiplier 1.2/1.375/1.55/1.725),
   coachNotes (custom instructions), targets: [{from, kcal, basis}]). For Leah and Eve the
   prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
 - `people/{pid}/days/{YYYY-MM-DD}`: items [{id, meal, item, qty, kcal, p, c, f, grams?,
   color?, note?}] (nutrition per unit), weight, active, steps, partial
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
+- `people/{pid}/meta/program` (Noom-style only): track standard|custom, start {trackKey: date},
+  done {lessonKey: {date, at, quiz, reflection}}, goals {"trackKey:wN": {text, at}}, custom {id, name,
+  goals, weeks, plan: [{theme, focus, lessons?: [{title, key}]}]}. trackKey is `s` (the built-in
+  16-week curriculum in the page) or `c-<id>`; lessonKey is `<trackKey>-<n>`. A custom program's
+  outline is drafted by Claude from the person's goals, and each week's lessons when they reach it.
+- `people/{pid}/lessons/{lessonKey}`: lesson cards Claude wrote once {cards, quiz, reflect, title}
 - `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, error?}],
   checkins [slot times already shown]
 
