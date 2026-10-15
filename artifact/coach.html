@@ -604,7 +604,9 @@ async function setWeight(date, lb, note) {
 // The header and tabs stay pinned at the top; the tabs sit just under the header, whatever its height.
 function pinHeader() {
   const hd = document.querySelector("header.top");
-  const set = () => document.documentElement.style.setProperty("--hdr-h", hd.offsetHeight + "px");
+  // Round down so the tabs tuck a hair under the header; rounding up leaves a sub-pixel gap that
+  // shows scrolled content (like a card's blue border) through the header's line.
+  const set = () => document.documentElement.style.setProperty("--hdr-h", Math.floor(hd.getBoundingClientRect().height) - 1 + "px");
   set();
   if (window.ResizeObserver) new ResizeObserver(set).observe(hd);
 }
