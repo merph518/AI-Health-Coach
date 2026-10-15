@@ -5,7 +5,7 @@
   --bg: #0a0a0a; --surface: #151515; --surface-2: #1f1f1f; --border: #2a2a2a;
   --ink: #ffffff; --ink-2: #c4c4c4; --ink-3: #8c8c8c;
   --good: #4cc274; --warn: #e0a040; --danger: #f07167;
-  --green: #4cc274; --yellow: #e5c04a; --orange: #f08a52;
+  --green: #4cc274; --yellow: #e5c04a; --red: #e5534b;
   --tick: #ffffff; --radius: 14px; --shadow: none;
 }
 /* Each person's highlight color. The root gets the chosen person's class; picker buttons carry their own. */
@@ -70,7 +70,7 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
 .ctip { cursor: help; }
 .dot.ctip { position: relative; } .dot.ctip::after { content: ""; position: absolute; inset: -9px; }
-.dot.green { background: var(--green); } .dot.yellow { background: var(--yellow); } .dot.orange { background: var(--orange); }
+.dot.green { background: var(--green); } .dot.yellow { background: var(--yellow); } .dot.red { background: var(--red); }
 .colors { display: flex; height: 10px; border-radius: 99px; overflow: hidden; gap: 2px; margin: 8px 0 6px; background: var(--surface-2); }
 .colors > div { height: 100%; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
@@ -288,7 +288,7 @@ function dayView(date) {
         id: String(i.id), meal: String(i.meal || "Snack"), item: String(i.item || ""), qty, n,
         kcal: Number(i.kcal) || 0, cal: Math.round(qty * (Number(i.kcal) || 0)),
         p: r1(qty * (Number(i.p) || 0)), c: r1(qty * (Number(i.c) || 0)), f: r1(qty * (Number(i.f) || 0)),
-        color: ["green", "yellow", "orange"].includes(i.color) ? i.color : null, note: i.note ? String(i.note) : "",
+        color: i.color === "orange" ? "red" : ["green", "yellow", "red"].includes(i.color) ? i.color : null, note: i.note ? String(i.note) : "",
       };
     })
     .sort((a, b) => mealRank(a.meal) - mealRank(b.meal) || a.n - b.n);
@@ -456,7 +456,7 @@ function choose(pid) {
     renderAll();
   }, err));
   S.unsub.push(S.db.doc(P("meta", "library")).onSnapshot((snap) => {
-    S.library = snap.exists && Array.isArray(snap.data().foods) ? snap.data().foods : [];
+    S.library = (snap.exists && Array.isArray(snap.data().foods) ? snap.data().foods : []).map((f) => f && f.color === "orange" ? { ...f, color: "red" } : f);
     renderLibraryList();
   }, err));
   S.feedback = [];
@@ -552,7 +552,7 @@ async function removeWithUndo(id) {
 const COLOR_INFO = {
   green: { label: "Green", hint: "fill up", desc: "Low calorie density: lots of food for few calories. Fill up on these." },
   yellow: { label: "Yellow", hint: "moderate", desc: "Middle calorie density. Enjoy in moderate portions." },
-  orange: { label: "Orange", hint: "smaller portions", desc: "High calorie density: a lot of calories in a small amount. Still fine, just in smaller portions." },
+  red: { label: "Red", hint: "smaller portions", desc: "High calorie density: a lot of calories in a small amount. Still fine, just in smaller portions." },
 };
 const colorTip = (k) => `${COLOR_INFO[k].label} food. ${COLOR_INFO[k].desc}`;
 function colorDot(k) {
@@ -560,23 +560,23 @@ function colorDot(k) {
     onclick: (e) => { e.stopPropagation(); toast(colorTip(k)); } });
 }
 function colorMix(d) {
-  const sum = { green: 0, yellow: 0, orange: 0 };
+  const sum = { green: 0, yellow: 0, red: 0 };
   for (const i of d.items) if (i.color) sum[i.color] += i.cal;
-  const tot = sum.green + sum.yellow + sum.orange;
+  const tot = sum.green + sum.yellow + sum.red;
   if (!tot) return null;
   const pct = (k) => Math.round((sum[k] / tot) * 100);
   return h("div", {},
-    h("div", { class: "colors", role: "img", "aria-label": `Green ${pct("green")}%, yellow ${pct("yellow")}%, orange ${pct("orange")}% of calories` },
-      ["green", "yellow", "orange"].filter((k) => sum[k]).map((k) => h("div", { style: `width:${(sum[k] / tot) * 100}%;background:var(--${k})` }))),
-    h("div", { class: "legend" }, ["green", "yellow", "orange"].map((k) =>
+    h("div", { class: "colors", role: "img", "aria-label": `Green ${pct("green")}%, yellow ${pct("yellow")}%, red ${pct("red")}% of calories` },
+      ["green", "yellow", "red"].filter((k) => sum[k]).map((k) => h("div", { style: `width:${(sum[k] / tot) * 100}%;background:var(--${k})` }))),
+    h("div", { class: "legend" }, ["green", "yellow", "red"].map((k) =>
       h("span", { class: "ctip", title: colorTip(k), tabindex: "0", onclick: () => toast(colorTip(k)) }, h("span", { class: `dot ${k}` }), `${COLOR_INFO[k].label} ${pct(k)}% `, h("span", { class: "faint num" }, `(${fmt(sum[k])})`)))),
     h("p", { class: "small muted", style: "margin-top:6px" },
-      ["green", "yellow", "orange"].map((k) => `${COLOR_INFO[k].label}: ${COLOR_INFO[k].hint}`).join(" · "), ". Based on calories per gram; no color is off-limits."));
+      ["green", "yellow", "red"].map((k) => `${COLOR_INFO[k].label}: ${COLOR_INFO[k].hint}`).join(" · "), ". Based on calories per gram; no color is off-limits."));
 }
 
 // Foods logged before switching to Noom-style have no color. One click asks Claude to
 // color every uncolored food (by name, so repeats match) across the log and the library.
-const COLOR_RULE = "Color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, orange above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, orange above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, orange above 0.5. Whole grains one step greener.";
+const COLOR_RULE = "Color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, red above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, red above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, red above 0.5. Whole grains one step greener.";
 const foodKey = (s) => String(s || "").trim().toLowerCase();
 function uncoloredFoods() {
   const map = new Map();
@@ -591,9 +591,9 @@ async function colorFoods(btn) {
   btn.disabled = true;
   btn.textContent = "Coloring…";
   try {
-    const out = await S.sample.json(`You label foods for a Noom-style food log. ${COLOR_RULE} Use typical values when grams are missing.\n\nReply with only a JSON array of ${list.length} strings, each "green", "yellow" or "orange", in the same order as these foods:\n${JSON.stringify(list)}`, { modelTier: "quick", cache: false });
+    const out = await S.sample.json(`You label foods for a Noom-style food log. ${COLOR_RULE} Use typical values when grams are missing.\n\nReply with only a JSON array of ${list.length} strings, each "green", "yellow" or "red", in the same order as these foods:\n${JSON.stringify(list)}`, { modelTier: "quick", cache: false });
     if (!Array.isArray(out) || out.length !== list.length) throw { code: "invalid_json" };
-    const colors = new Map(list.map((f, n) => [foodKey(f.food), ["green", "yellow", "orange"].includes(out[n]) ? out[n] : null]).filter((x) => x[1]));
+    const colors = new Map(list.map((f, n) => [foodKey(f.food), ["green", "yellow", "red"].includes(out[n]) ? out[n] : null]).filter((x) => x[1]));
     let n = 0;
     for (const date of Object.keys(S.days)) {
       if (!(S.days[date].items || []).some((i) => !i.color && colors.has(foodKey(i.item)))) continue;
@@ -614,7 +614,7 @@ function colorFoodsButton() {
   if (!n) return null;
   const btn = h("button", { class: "btn", type: "button", style: "margin-top:10px" }, `Color-code my foods (${n})`);
   btn.onclick = () => colorFoods(btn);
-  return h("div", {}, btn, h("p", { class: "small muted", style: "margin-top:4px" }, "Noom-style shows each food as green, yellow or orange. Foods logged before you switched don't have a color yet."));
+  return h("div", {}, btn, h("p", { class: "small muted", style: "margin-top:4px" }, "Noom-style shows each food as green, yellow or red. Foods logged before you switched don't have a color yet."));
 }
 
 // ---------- Today ----------
@@ -1140,7 +1140,7 @@ SAFETY
 const NOOM = `PROGRAM STYLE: Noom-style.
 - Coach with motivational interviewing: open questions, affirmations, reflections, and brief summaries. Ask at most one question per reply.
 - Tie suggestions to their own reasons for losing weight when you know them.
-- When logging, set each item's color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, orange above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, orange above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, orange above 0.5. Whole grains one step greener. No food is off-limits and no color is "bad"; nuts, olive oil and salmon are orange and still good choices.
+- When logging, set each item's color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, red above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, red above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, red above 0.5. Whole grains one step greener. No food is off-limits and no color is "bad"; nuts, olive oil and salmon are red and still good choices.
 - Their daily budget has a zone of about 150 calories either side; landing anywhere in the zone is a win.`;
 
 const CLASSIC = `PROGRAM STYLE: Classic. Practical and numbers-first: calories, protein and calories left. Skip food colors.`;
@@ -1339,7 +1339,7 @@ function coachTools(chip) {
         date: DATE, meal: { type: "string", enum: MEALS },
         items: { type: "array", items: { type: "object", required: ["item", "qty", "kcal", "protein", "carbs", "fat", "note"], properties: {
           item: { type: "string", description: "Short name with portion, e.g. 'Greek yogurt, nonfat (170 g cup)'" }, qty: { type: "number" }, ...NUTR,
-          ...(S.prof.mode === "noom" ? { color: { type: "string", enum: ["green", "yellow", "orange"], description: "Calorie-density color" } } : {}),
+          ...(S.prof.mode === "noom" ? { color: { type: "string", enum: ["green", "yellow", "red"], description: "Calorie-density color" } } : {}),
           note: { type: "string", description: "How the estimate was made and any assumptions" } } } } } },
       async execute(a) {
         const date = vDate(a.date), meal = vMeal(a.meal);
@@ -1349,7 +1349,7 @@ function coachTools(chip) {
           const r = { item: String(i.item ?? "").trim().slice(0, 200), qty: num(i.qty ?? 1, "qty", 0.01, 100), kcal: num(i.kcal, "kcal", 0, 5000),
             p: num(i.protein ?? 0, "protein", 0, 500), c: num(i.carbs ?? 0, "carbs", 0, 1000), f: num(i.fat ?? 0, "fat", 0, 500), note: i.note ? String(i.note).slice(0, 500) : "" };
           const g = optNum(i.grams, "grams", 0, 5000); if (g != null) r.grams = g;
-          if (["green", "yellow", "orange"].includes(i.color)) r.color = i.color;
+          if (["green", "yellow", "red", "orange"].includes(i.color)) r.color = i.color === "orange" ? "red" : i.color;
           if (!r.item) throw new ToolErr("every item needs a name");
           return r;
         });
