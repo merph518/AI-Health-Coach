@@ -385,7 +385,37 @@ h2.big { font-size: 26px; text-align: center; margin: 0; line-height: 1.2; }
 .confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .confetti i { position: absolute; top: -12px; left: var(--x); width: 9px; height: 14px; border-radius: 3px; background: var(--c); animation: fall 1.8s ease-in var(--d) both; }
 @keyframes fall { to { transform: translateY(720px) rotate(540deg); opacity: .2; } }
-@media (prefers-reduced-motion: reduce) { .stage.in > *, .art span, .confetti i, .revealed { animation: none !important; } }
+.card.program { position: relative; }
+.task .ic { position: relative; }
+.task.pop { animation: popglow 1.1s ease-out calc(var(--el, 0ms) * -1) both; }
+.task.pop .ic { animation: pop .55s cubic-bezier(.3, 1.6, .5, 1) calc(var(--el, 0ms) * -1) both; }
+.task.pop .ic::after { content: ""; position: absolute; inset: 0; border-radius: 50%; animation: ring .8s ease-out calc(var(--el, 0ms) * -1) forwards; }
+.burst { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+.burst i { position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--c); opacity: 0; animation: burst .75s ease-out calc(var(--d) - var(--el, 0ms)) forwards; }
+.burst i:nth-child(odd) { border-radius: 2px; width: 6px; height: 10px; }
+@keyframes pop { 0% { transform: scale(.4); } 60% { transform: scale(1.3); } 100% { transform: scale(1); } }
+@keyframes ring { 0% { box-shadow: 0 0 0 0 var(--good); } 100% { box-shadow: 0 0 0 16px transparent; } }
+@keyframes burst { 0% { opacity: 1; transform: rotate(var(--a)) translateY(0) scale(1); } 70% { opacity: 1; } 100% { opacity: 0; transform: rotate(var(--a)) translateY(-34px) rotate(200deg) scale(.5); } }
+@keyframes popglow { 0%, 30% { background: color-mix(in srgb, var(--good) 16%, var(--surface)); } }
+.alldone { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; overflow: hidden; background: color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); animation: fadein .3s ease-out; cursor: pointer; }
+.alldone.out { animation: fadeout .4s ease-in forwards; }
+.alldone .confetti i { animation: fallfar 3.2s ease-in var(--d) both; }
+.alldone .box { position: relative; display: grid; justify-items: center; gap: 8px; padding: 24px; text-align: center; max-width: 340px; }
+.alldone .medal { position: relative; width: 170px; height: 170px; display: grid; place-items: center; font-size: 92px; line-height: 1; animation: pop .8s cubic-bezier(.3, 1.6, .5, 1) both; }
+.alldone .medal span { position: relative; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, .25)); }
+.alldone .rays { position: absolute; inset: -50px; border-radius: 50%; background: repeating-conic-gradient(color-mix(in srgb, var(--yellow) 55%, transparent) 0 9deg, transparent 9deg 18deg); -webkit-mask: radial-gradient(closest-side, #000 35%, transparent); mask: radial-gradient(closest-side, #000 35%, transparent); animation: spin 9s linear infinite; }
+.alldone h2 { font-size: 30px; margin: 6px 0 0; animation: rise .5s ease-out .35s both; }
+.alldone p { margin: 0; color: var(--ink-2); animation: rise .5s ease-out .5s both; }
+.alldone .btn { margin-top: 10px; min-width: 140px; animation: rise .5s ease-out .65s both; }
+.fw { position: absolute; left: var(--x); top: var(--y); width: 0; height: 0; pointer-events: none; }
+.fw i { position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); opacity: 0; animation: firework 1.1s ease-out var(--d) forwards; }
+@keyframes firework { 0% { opacity: 1; transform: rotate(var(--a)) translateY(0); } 70% { opacity: 1; } 100% { opacity: 0; transform: rotate(var(--a)) translateY(-70px) translateY(14px); } }
+@keyframes fallfar { from { transform: translateY(-20px) rotate(0); } to { transform: translateY(110vh) rotate(720deg); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+@keyframes fadein { from { opacity: 0; } }
+@keyframes fadeout { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .stage.in > *, .art span, .confetti i, .revealed, .task.pop, .task.pop .ic, .task.pop .ic::after, .burst i, .alldone *, .alldone { animation: none !important; } .confetti, .burst, .fw { display: none; } }
 
 html { scrollbar-gutter: stable; scroll-padding-top: calc(var(--hdr-h, 64px) + 48px); }
 [hidden] { display: none !important; }
@@ -2032,10 +2062,45 @@ function weekStrip() {
       h("div", { class: `ring${pct >= 100 ? " full" : ""}`, style: `--pct:${pct}` }), "MTWTFSS"[i]);
   }));
 }
-function taskRow({ ic, title, sub, done, meter, onclick, thumb }) {
-  return h("li", {}, h("button", { type: "button", class: `task${done ? " done" : ""}`, onclick, disabled: !onclick },
+// Celebrate a checklist item the moment it turns done (not ones already done when the page opened).
+// The list often re-renders right after a change, so a pop keeps playing from where it was.
+const DONE_SEEN = new Map(), POP_AT = new Map();
+const CHEER = ["var(--good)", "var(--accent)", "var(--yellow)", "var(--red)", "#4aa8e8", "#b48cff"];
+function celebrate(tasks) {
+  const k = `${S.pid}/${S.today}`, seen = DONE_SEEN.get(k), now = new Set(tasks.filter((t) => t.done).map((t) => t.ic));
+  DONE_SEEN.set(k, now);
+  if (!seen) return false;
+  const fresh = tasks.filter((t) => t.done && !seen.has(t.ic));
+  for (const t of fresh) POP_AT.set(`${k}/${t.ic}`, Date.now());
+  for (const t of tasks) { const ms = Date.now() - (POP_AT.get(`${k}/${t.ic}`) || 0); if (t.done && ms < 1100) t.pop = ms; }
+  const all = now.size === tasks.length && seen.size < tasks.length;
+  if (fresh.length) navigator.vibrate?.(all ? [20, 60, 30] : 15);
+  if (all) setTimeout(allDone, 650);
+  return all;
+}
+// The special one: every item on today's list is done.
+function allDone() {
+  if (document.querySelector(".alldone")) return;
+  const first = String(S.prof?.name || "").split(" ")[0];
+  const close = () => { el.classList.add("out"); setTimeout(() => el.remove(), 400); clearTimeout(timer); };
+  const fireworks = [[18, 22, 0.1], [80, 18, 0.45], [30, 70, 0.8], [75, 66, 1.15], [50, 12, 1.5], [12, 50, 1.85], [88, 44, 2.2]].map(([x, y, d], k) =>
+    h("span", { class: "fw", style: `--x:${x}%;--y:${y}%` }, Array.from({ length: 16 }, (_, j) => h("i", { style: `--a:${j * 22.5}deg;--d:${d}s;--c:${CHEER[(j + k) % CHEER.length]}` }))));
+  const el = h("div", { class: "alldone", role: "status", onclick: close },
+    h("div", { class: "confetti", "aria-hidden": "true" }, Array.from({ length: 48 }, (_, j) => h("i", { style: `--x:${(j * 29) % 100}%;--d:${(j % 12) * 0.12}s;--c:${CHEER[j % CHEER.length]}` }))),
+    ...fireworks,
+    h("div", { class: "box" },
+      h("div", { class: "medal", "aria-hidden": "true" }, h("div", { class: "rays" }), h("span", {}, "🏆")),
+      h("h2", { class: "serif" }, "Perfect day!"),
+      h("p", {}, `Every goal on today's list is done${first ? `, ${first}` : ""}. That's what progress looks like.`),
+      h("button", { class: "btn btn-primary", type: "button" }, "Woo-hoo!")));
+  document.body.append(el);
+  const timer = setTimeout(close, 7000);
+}
+const burst = () => h("span", { class: "burst", "aria-hidden": "true" }, Array.from({ length: 12 }, (_, j) => h("i", { style: `--a:${j * 30}deg;--d:${(j % 3) * 0.04 + 0.12}s;--c:${CHEER[j % CHEER.length]}` })));
+function taskRow({ ic, title, sub, done, meter, onclick, thumb, pop }) {
+  return h("li", {}, h("button", { type: "button", class: `task${done ? " done" : ""}${pop != null ? " pop" : ""}`, style: pop != null ? `--el:${pop}ms` : null, onclick, disabled: !onclick },
     thumb ? photoImg(thumb, "thumb") : null,
-    h("span", { class: "ic" }, icon(done ? "check" : ic)),
+    h("span", { class: "ic" }, icon(done ? "check" : ic), pop != null ? burst() : null),
     h("span", { class: "tx" }, h("strong", {}, title), sub ? h("span", {}, sub) : null,
       meter != null ? h("div", { class: "meter" }, h("div", { style: `width:${Math.min(100, Math.round(meter * 100))}%` })) : null),
     onclick ? h("span", { class: "go", "aria-hidden": "true" }, "›") : null));
@@ -2053,7 +2118,7 @@ function basicChecklist(d) {
     const goal = Number(S.prof.stepGoal) || 6000;
     tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
   }
-  const n = tasks.filter((t) => t.done).length;
+  const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
     h("div", { class: "phead", style: "margin-bottom:12px" }, h("h2", {}, "Today"), h("span", { class: "small muted num" }, `${n} of ${tasks.length} done`)),
     h("ul", { class: "tlist" }, tasks.map(taskRow)));
@@ -2080,7 +2145,7 @@ function programCard(d) {
     tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
   }
   tasks.push(P0.goal ? { ic: "flag", title: "This week's goal", sub: P0.goal.text, done: true, onclick: openGoal } : { ic: "flag", title: "Set this week's goal", sub: P0.lastGoal ? "Look back at last week, then pick one small goal" : "One small, specific goal for the week", done: false, onclick: openGoal });
-  const n = tasks.filter((t) => t.done).length;
+  const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
     h("div", { class: "banner" }, photoImg(weekPhoto(P0, P0.week)),
       h("div", { class: "over" }, h("small", {}, `Day ${P0.day} · Week ${P0.week}${P0.tk === "s" ? "" : ` · ${P0.name}`}`), h("div", { class: "serif", style: "font-size:22px" }, P0.theme))),
