@@ -63,6 +63,15 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .mrow > .msg, .mrow > .mwrap { max-width: none; min-width: 0; }
 .picker .btn { display: flex; align-items: center; gap: 12px; }
 .avrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.swatch { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border); cursor: pointer; padding: 0; box-shadow: 0 0 0 2px var(--surface); position: relative; }
+.swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink); }
+.swatch.none { width: auto; padding: 0 10px; border-radius: 999px; font-size: 12px; background: var(--surface-2); color: var(--ink-2); }
+.swatch.custom { display: inline-grid; place-items: center; background: conic-gradient(#f05252, #f0b429, #2f9e4e, #0e7490, #4f46e5, #d6457a, #f05252); color: #fff; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,.5); overflow: hidden; }
+.swatch.custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.bgthumb { width: 56px; height: 56px; border-radius: 12px; background: center / cover; border: 1px solid var(--border); }
+html[data-bgimg="on"] body { background-image: linear-gradient(color-mix(in srgb, var(--bg) 30%, transparent), color-mix(in srgb, var(--bg) 30%, transparent)), var(--bg-img); background-size: cover; background-position: center; background-attachment: fixed; }
+html[data-bgimg="on"][data-theme] header.top, html[data-bgimg="on"][data-theme] .tabs { background: color-mix(in srgb, var(--bg) 80%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .avatar .emo { font-size: 19px; line-height: 1; }
 .avatar.sm .emo { font-size: 14px; }
 .avchoices { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -663,6 +672,7 @@ function setPersonColor(pid) {
 }
 function showPicker() {
   setPersonColor(null);
+  { const l = savedLook(); applyLook({ theme: l.theme, photos: l.photos }); } // no one's custom colors on the shared picker
   $("main").hidden = true;
   $("whoBtn").hidden = true;
   const list = $("pickerList");
@@ -831,6 +841,18 @@ function coachAvatarSetting() {
   });
   draw();
   return h("div", { class: "field" }, h("span", {}, "Your coach's avatar"), box);
+}
+// A background picture: longest side 1280px, JPEG, small enough to live in the profile.
+async function bgFromFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("That file isn't a picture we can read.")); i.src = url; });
+    const k = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas"); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    for (const q of [0.72, 0.6, 0.45]) { const d = c.toDataURL("image/jpeg", q); if (okBgImage(d)) return d; }
+    throw new Error("That picture is too detailed to use. Try a smaller one.");
+  } finally { URL.revokeObjectURL(url); }
 }
 function avatarSetting() {
   const box = h("div", { class: "avrow" });
@@ -1631,15 +1653,39 @@ async function setWeeklyGoal(text) {
 
 // ---------- look: theme and photos (per person, in Settings → Appearance) ----------
 // Light with photos is the default for everyone; dark and no-photos are opt-outs.
+// Optional per-person colors and background picture (Appearance). Colors are #rrggbb; the picture
+// is a JPEG data URL in the profile. Unset means the theme's own colors.
+const okHex = (c) => typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c) ? c.toLowerCase() : null;
+const okBgImage = (u) => typeof u === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 700000 ? u : null;
 function lookOf(prof) {
   const t = ["light", "dark", "system"].includes(prof?.theme) ? prof.theme : "light";
-  return { theme: t, photos: prof?.photos !== false };
+  return { theme: t, photos: prof?.photos !== false, accent: okHex(prof?.accent), bg: okHex(prof?.bg), bgImage: okBgImage(prof?.bgImage) };
+}
+function lum(hex) {
+  const ch = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
 }
 function applyLook(look) {
   const dark = look.theme === "dark" || (look.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
-  document.documentElement.dataset.photos = look.photos ? "on" : "off";
-  store.set("sp.look", JSON.stringify(look));
+  const root = document.documentElement, st = root.style;
+  root.dataset.theme = dark ? "dark" : "light";
+  root.dataset.photos = look.photos ? "on" : "off";
+  const a = okHex(look.accent);
+  if (a) {
+    const mixBase = dark ? "#151515" : "#ffffff";
+    st.setProperty("--accent", a);
+    st.setProperty("--accent-ink", lum(a) > 0.45 ? "#141414" : "#ffffff");
+    st.setProperty("--accent-soft", `color-mix(in srgb, ${a} ${dark ? 28 : 16}%, ${mixBase})`);
+    st.setProperty("--bar", `color-mix(in srgb, ${a} 45%, ${mixBase})`);
+    st.setProperty("--bar-today", a); st.setProperty("--line", a);
+    st.setProperty("--link", dark || lum(a) < 0.3 ? a : `color-mix(in srgb, ${a} 70%, #000000)`);
+  } else for (const v of ["--accent", "--accent-ink", "--accent-soft", "--bar", "--bar-today", "--line", "--link"]) st.removeProperty(v);
+  const b = okHex(look.bg);
+  if (b) st.setProperty("--bg", b); else st.removeProperty("--bg");
+  const img = okBgImage(look.bgImage);
+  if (img) { st.setProperty("--bg-img", `url("${img}")`); root.dataset.bgimg = "on"; } else { st.removeProperty("--bg-img"); delete root.dataset.bgimg; }
+  const { bgImage, ...small } = look; // the picture is too big to keep in localStorage; it comes with the profile
+  store.set("sp.look", JSON.stringify(small));
 }
 function savedLook() { try { return JSON.parse(store.get("sp.look") || "null") || lookOf(null); } catch { return lookOf(null); } }
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => applyLook(S.prof ? lookOf(S.prof) : savedLook()));
@@ -2166,8 +2212,39 @@ function renderSettings() {
   f.level.value = actLevel(p.activityLevel)[0];
   f.theme.value = lookOf(p).theme;
   f.photos.checked = lookOf(p).photos;
-  const previewLook = () => applyLook({ theme: f.theme.value, photos: f.photos.checked });
+  const colors = { accent: lookOf(p).accent, bg: lookOf(p).bg, bgImage: lookOf(p).bgImage };
+  const previewLook = () => applyLook({ theme: f.theme.value, photos: f.photos.checked, ...colors });
   f.theme.addEventListener("input", previewLook); f.photos.addEventListener("input", previewLook);
+  const colorsBox = h("div", { class: "stack", style: "gap:14px" });
+  const ACCENTS = ["#157a72", "#3b8cf0", "#7a4fd0", "#d6457a", "#e0602f", "#f0b429", "#2f9e4e", "#0e7490", "#4f46e5", "#1d2a2a"];
+  const BGS = ["#f5f3ee", "#eef4f8", "#f3eefa", "#fdf3e7", "#eaf5ec", "#fbeef0", "#0a0a0a", "#0f172a", "#1a1325", "#10201a"];
+  const bgFile = h("input", { type: "file", accept: "image/*", hidden: true });
+  bgFile.addEventListener("change", async () => {
+    const f0 = bgFile.files?.[0]; bgFile.value = "";
+    if (!f0) return;
+    try { colors.bgImage = await bgFromFile(f0); previewLook(); drawColors(); }
+    catch (e) { toast(e.message || "Couldn't use that picture."); }
+  });
+  const swatchRow = (key, list, label) => {
+    const custom = h("input", { type: "color", value: colors[key] || list[0], "aria-label": `Custom ${label} color`, title: "Pick any color" });
+    custom.addEventListener("input", () => { colors[key] = okHex(custom.value); previewLook(); markSw(); });
+    const row = h("div", { class: "swatches", role: "radiogroup", "aria-label": label },
+      h("button", { type: "button", class: "swatch none", role: "radio", "aria-label": "Theme default", title: "Theme default", "data-c": "", onclick: () => { colors[key] = null; previewLook(); markSw(); } }, "Auto"),
+      list.map((c) => h("button", { type: "button", class: "swatch", role: "radio", "aria-label": c, title: c, "data-c": c, style: `background:${c}`, onclick: () => { colors[key] = c; custom.value = c; previewLook(); markSw(); } })),
+      h("label", { class: "swatch custom", title: "Pick any color" }, "+", custom));
+    const markSw = () => row.querySelectorAll(".swatch[data-c]").forEach((b) => b.setAttribute("aria-checked", String((b.dataset.c || null) === colors[key])));
+    markSw();
+    return h("div", { class: "field" }, h("span", {}, label), row);
+  };
+  const drawColors = () => colorsBox.replaceChildren(
+    swatchRow("accent", ACCENTS, "Accent color"),
+    swatchRow("bg", BGS, "Background color"),
+    h("div", { class: "field" }, h("span", {}, "Background picture"),
+      h("div", { class: "avrow" },
+        colors.bgImage ? h("span", { class: "bgthumb", style: `background-image:url("${colors.bgImage}")` }) : null,
+        h("button", { class: "btn", type: "button", onclick: () => bgFile.click() }, colors.bgImage ? "Change picture" : "Upload a picture"),
+        colors.bgImage ? h("button", { class: "linkish small", type: "button", onclick: () => { colors.bgImage = null; previewLook(); drawColors(); } }, "Remove") : null, bgFile)));
+  drawColors();
   f.why.value = p.bigPicture || "";
   f.tier.value = p.coachTier || "quick";
   f.style.value = COACH_STYLES.some((o) => o[0] === p.coachStyle) ? p.coachStyle : "balanced";
@@ -2232,6 +2309,7 @@ function renderSettings() {
     look: [
       avatarSetting(),
       h("label", { class: "field" }, "Theme", f.theme),
+      colorsBox,
       h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.photos, "Show photos"),
       h("p", { class: "small muted" }, "Changes show right away; Save keeps them for you on every device. Photos are free stock photos from Unsplash.")],
     activity: [
@@ -2252,6 +2330,7 @@ function renderSettings() {
         x.activityLevel = f.level.value;
         x.theme = f.theme.value;
         x.photos = f.photos.checked;
+        for (const k of ["accent", "bg", "bgImage"]) { if (colors[k]) x[k] = colors[k]; else delete x[k]; }
         x.bigPicture = f.why.value.trim().slice(0, 600);
         x.coachTier = f.tier.value === "default" ? "default" : "quick";
         x.coachStyle = f.style.value;

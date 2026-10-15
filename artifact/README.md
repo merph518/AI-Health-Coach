@@ -24,6 +24,7 @@ Feedback tab or the coach's `send_feedback` tool.
   stepGoal (Activity tab; default 6000, step task shows only when activity tracking is on),
   waterUnit glass|s16|m24|l32 (8/16/24/32 oz) and waterGoal (count a day; default about 64 oz),
   theme light|dark|system and photos (Appearance; default light with photos),
+  accent and bg (#rrggbb, optional) and bgImage (JPEG data URL, longest side 1280px; Appearance),
   avatar (optional photo from Appearance: a 192px JPEG data URL, shown on their chat messages and the
   person switcher), coachAvatar (Your coach: a preset sprout|owl|bear|fox|panda|turtle|cat|dog|bunny|robot|runner|star,
   or a photo data URL; default sprout),
