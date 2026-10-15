@@ -50,6 +50,27 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .tabs::-webkit-scrollbar { display: none; }
 .tab { border: 0; background: none; padding: 10px 10px 12px; cursor: pointer; color: var(--ink-2); border-bottom: 2px solid transparent; white-space: nowrap; }
 .tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tab.gear { margin-left: auto; display: grid; place-items: center; padding: 8px 6px 10px; }
+.tab.gear svg { width: 22px; height: 22px; }
+.viewtabs { margin-bottom: 14px; }
+.avatar { flex: none; width: 32px; height: 32px; border-radius: 50%; overflow: hidden; display: inline-grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 14px; line-height: 1; }
+.avatar img, .avatar svg { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar.sm { width: 24px; height: 24px; font-size: 11px; }
+.avatar.lg { width: 72px; height: 72px; font-size: 28px; }
+.mrow { display: flex; gap: 8px; align-items: flex-end; max-width: 94%; min-width: 0; }
+.mrow.bot { justify-self: start; }
+.mrow.user { justify-self: end; flex-direction: row-reverse; }
+.mrow > .msg, .mrow > .mwrap { max-width: none; min-width: 0; }
+.picker .btn { display: flex; align-items: center; gap: 12px; }
+.avrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.combo { position: relative; }
+.combo input { width: 100%; box-sizing: border-box; }
+.suggest { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 6px); margin: 0; padding: 6px; list-style: none; max-height: min(300px, 45vh); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 10px 28px rgba(0, 0, 0, .18); }
+.suggest li { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; padding: 10px 10px; border-radius: 8px; cursor: pointer; font-size: 15px; color: var(--ink); line-height: 1.3; }
+.suggest li + li { margin-top: 2px; }
+.suggest li:hover, .suggest li[aria-selected="true"] { background: var(--surface-2); }
+.suggest .nm { min-width: 0; overflow-wrap: anywhere; }
+.suggest .kc { flex: none; font-size: 13px; color: var(--ink-2); }
 
 .picker { display: grid; gap: 12px; margin-top: 32px; }
 .picker h1 { font-size: 22px; }
@@ -352,8 +373,6 @@ html { scrollbar-gutter: stable; scroll-padding-top: calc(var(--hdr-h, 64px) + 4
     <nav class="tabs" role="tablist" aria-label="Views" id="tabs"></nav>
     <section id="v-coach" role="tabpanel"></section>
     <section id="v-today" role="tabpanel" hidden></section>
-    <section id="v-weight" role="tabpanel" hidden></section>
-    <section id="v-calories" role="tabpanel" hidden></section>
     <section id="v-history" role="tabpanel" hidden></section>
     <section id="v-settings" role="tabpanel" hidden></section>
     <section id="v-feedback" role="tabpanel" hidden></section>
@@ -370,7 +389,7 @@ const MEALS = ["Breakfast", "Morning Snack", "Lunch", "Afternoon Snack", "Dinner
 const MEAL_RANK = { breakfast: 0, "morning snack": 1, lunch: 2, "afternoon snack": 3, dinner: 4, snack: 5, "evening snack": 5, dessert: 5 };
 const mealRank = (m) => MEAL_RANK[String(m).trim().toLowerCase()] ?? 6;
 const CHECKIN_TIMES = ["07:53", "11:53", "17:53"];
-const TABS = [["coach", "Coach"], ["today", "Today"], ["weight", "Weight"], ["calories", "Calories"], ["history", "History"], ["settings", "Settings"], ["feedback", "Feedback"]];
+const TABS = [["coach", "Coach"], ["today", "Today"], ["history", "History"], ["feedback", "Feedback"], ["settings", "Settings"]];
 const LB_PER_KG = 2.2046226218, CM_PER_IN = 2.54, FLOOR = { male: 1500, female: 1320 };
 
 const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
@@ -641,7 +660,7 @@ function showPicker() {
   list.replaceChildren(
     ...Object.entries(S.people)
       .sort((a, b) => (a[0] === "michael" ? -1 : b[0] === "michael" ? 1 : String(a[1].name).localeCompare(String(b[1].name))))
-      .map(([id, p]) => h("button", { class: `btn p-${id}`, onclick: () => choose(id) }, String(p.name || id))),
+      .map(([id, p]) => h("button", { class: `btn p-${id}`, onclick: () => choose(id) }, personAvatar(id), String(p.name || id))),
   );
   if (!list.children.length) list.append(h("p", { class: "muted" }, "No people set up yet."));
   $("picker").hidden = false;
@@ -664,7 +683,7 @@ function choose(pid) {
   $("picker").hidden = true;
   $("main").hidden = false;
   const who = $("whoBtn");
-  who.replaceChildren(String(S.prof.name || pid), h("span", { class: "faint", "aria-hidden": "true" }, " ▾"));
+  setWhoButton();
   who.setAttribute("aria-label", `Logging as ${S.prof.name}. Switch person`);
   who.hidden = false;
 
@@ -709,7 +728,9 @@ $("whoBtn").addEventListener("click", () => {
 function buildTabs() {
   const nav = $("tabs");
   nav.replaceChildren(...TABS.map(([id, label]) =>
-    h("button", { class: "tab", role: "tab", "aria-selected": String(S.tab === id), onclick: () => setTab(id) }, label)));
+    id === "settings"
+      ? h("button", { class: "tab gear", role: "tab", "aria-label": label, title: label, "aria-selected": String(S.tab === id), onclick: () => setTab(id) }, icon("gear"))
+      : h("button", { class: "tab", role: "tab", "aria-selected": String(S.tab === id), onclick: () => setTab(id) }, label)));
   setTab(S.tab);
 }
 function setTab(id) {
@@ -728,11 +749,73 @@ function setTab(id) {
 function renderAll() {
   if (!S.pid) return;
   if (S.tab === "today") renderToday();
-  if (S.tab === "weight") renderWeight();
-  if (S.tab === "calories") renderCalories();
   if (S.tab === "history") renderHistory();
   if (S.tab === "coach") renderDaybar();
 }
+
+// Sub-tabs inside a view (Today: checklist/log; History: food/weight/calories), remembered per device.
+const VIEW_SECS = { today: [["check", "Daily Checklist"], ["log", "Daily Log"]], history: [["food", "Food"], ["weight", "Weight"], ["calories", "Calories"]] };
+function viewSec(view) {
+  const secs = VIEW_SECS[view], v = store.get(`sp.sec.${view}`);
+  return secs.some((x) => x[0] === v) ? v : secs[0][0];
+}
+function setViewSec(view, id) {
+  store.set(`sp.sec.${view}`, id);
+  if (S.tab !== view) setTab(view); else { renderAll(); window.scrollTo({ top: 0, behavior: "instant" }); }
+}
+function viewTabs(view) {
+  const cur = viewSec(view);
+  return h("nav", { class: "subtabs viewtabs", role: "tablist", "aria-label": view === "today" ? "Today" : "History" },
+    VIEW_SECS[view].map(([id, label]) => h("button", { type: "button", role: "tab", class: "subtab", "aria-selected": String(id === cur),
+      onclick: () => { if (id !== cur) setViewSec(view, id); } }, label)));
+}
+
+// ---------- avatars ----------
+// The coach has a fixed sprout avatar. People can upload a photo (Settings → Appearance); it's
+// shrunk to a small JPEG and kept in their profile as a data URL. Otherwise it's their initial.
+const COACH_AVATAR = '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#2f9e6e"/><path d="M16 25.5v-9" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><path d="M16 17.5C16 13 13 9.5 7.5 9.5c0 4.5 3 8 8.5 8z" fill="#fff"/><path d="M16 15.5c0-4.5 3-8 8.5-8 0 4.5-3 8-8.5 8z" fill="#d7f5e6"/></svg>';
+const okAvatar = (u) => typeof u === "string" && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 200000 ? u : null;
+function coachAvatar() { const s = h("span", { class: "avatar coach", title: "Coach" }); s.innerHTML = COACH_AVATAR; return s; }
+function personAvatar(pid, size = "") {
+  const p = S.people[pid] || {}, url = okAvatar(p.avatar), name = String(p.name || pid || "?");
+  return h("span", { class: `avatar ${size} p-${pid}`, "aria-hidden": "true" },
+    url ? h("img", { src: url, alt: "" }) : name.trim().charAt(0).toUpperCase());
+}
+// Center-crop and shrink a picked photo to 192px, as a JPEG data URL (about 10 to 20 KB).
+async function avatarFromFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("That file isn't a picture we can read.")); i.src = url; });
+    const side = Math.min(img.naturalWidth, img.naturalHeight), N = 192;
+    const c = document.createElement("canvas"); c.width = N; c.height = N;
+    c.getContext("2d").drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, N, N);
+    return c.toDataURL("image/jpeg", 0.85);
+  } finally { URL.revokeObjectURL(url); }
+}
+function avatarSetting() {
+  const box = h("div", { class: "avrow" });
+  const file = h("input", { type: "file", accept: "image/*", hidden: true });
+  const draw = () => box.replaceChildren(personAvatar(S.pid, "lg"),
+    h("button", { class: "btn", type: "button", onclick: () => file.click() }, okAvatar(S.prof.avatar) ? "Change photo" : "Upload photo"),
+    okAvatar(S.prof.avatar) ? h("button", { class: "linkish small", type: "button", onclick: () => save(null) }, "Remove") : null, file);
+  const save = async (u) => {
+    try { await mutateProfile((p) => { if (u) p.avatar = u; else delete p.avatar; }); toast(u ? "Photo saved." : "Photo removed."); draw(); refreshAvatars(); }
+    catch (e) { toast(writeError(e)); }
+  };
+  file.addEventListener("change", async () => {
+    const f0 = file.files?.[0]; file.value = "";
+    if (!f0) return;
+    try { await save(await avatarFromFile(f0)); } catch (e) { toast(e.message || "Couldn't use that picture."); }
+  });
+  draw();
+  return h("div", { class: "field" }, h("span", {}, "Your photo (shows on your messages and the person switcher)"), box);
+}
+function setWhoButton() {
+  const who = $("whoBtn");
+  who.replaceChildren(personAvatar(S.pid, "sm"), String(S.prof.name || S.pid), h("span", { class: "faint", "aria-hidden": "true" }, " ▾"));
+}
+function refreshAvatars() { if (!S.pid) return; setWhoButton(); renderChat(); }
+function chatRow(role, el) { return h("div", { class: `mrow ${role}` }, role === "user" ? personAvatar(S.pid) : coachAvatar(), el); }
 
 function LB() { return h("em", { class: "unit" }, "lb"); }
 function CAL() { return h("em", { class: "unit" }, "cal"); }
@@ -857,17 +940,19 @@ function defaultMeal() {
 }
 function buildTodayForms() {
   const meal = h("select", { "aria-label": "Meal" }, MEALS.map((m) => h("option", {}, m)));
-  const item = h("input", { list: "libList", placeholder: "e.g. Greek yogurt, 170 g", autocomplete: "off", "aria-label": "Food" });
+  const item = h("input", { placeholder: "e.g. Greek yogurt, 170 g", autocomplete: "off", "aria-label": "Food" });
   const qty = h("input", { type: "number", inputmode: "decimal", step: "any", min: "0", value: "1", "aria-label": "Quantity" });
   const kcal = h("input", { type: "number", inputmode: "decimal", step: "any", min: "0", "aria-label": "Calories each" });
   const prot = h("input", { type: "number", inputmode: "decimal", step: "any", min: "0", "aria-label": "Protein grams each" });
   const extra = { c: 0, f: 0, grams: null, color: null, note: "" };
-  item.addEventListener("change", () => {
+  const fill = () => {
     const hit = S.library.find((f) => String(f.name).toLowerCase() === item.value.trim().toLowerCase());
     if (!hit) return;
     kcal.value = hit.kcal; prot.value = hit.p ?? "";
     Object.assign(extra, { c: Number(hit.c) || 0, f: Number(hit.f) || 0, grams: hit.grams ?? null, color: hit.color ?? null, note: hit.note ?? "" });
-  });
+  };
+  item.addEventListener("change", fill);
+  const itemBox = foodCombo(item, () => { fill(); qty.focus({ preventScroll: true }); });
   const addBtn = h("button", { class: "btn btn-primary", type: "submit" }, "Add food");
   const foodForm = h("form", { class: "stack", style: "gap:10px", onsubmit: async (e) => {
     e.preventDefault();
@@ -887,7 +972,7 @@ function buildTodayForms() {
     h("div", { class: "row" },
       h("label", { class: "field grow" }, "Meal", meal),
       h("label", { class: "field", style: "flex:0 0 90px" }, "Qty", qty)),
-    h("label", { class: "field" }, "Food (past foods fill in automatically)", item),
+    h("label", { class: "field" }, "Food (past foods fill in automatically)", itemBox),
     h("div", { class: "row" },
       h("label", { class: "field grow" }, "Calories each", kcal),
       h("label", { class: "field grow" }, "Protein g each (optional)", prot)),
@@ -927,10 +1012,42 @@ function buildTodayForms() {
   meal.addEventListener("change", () => { todayForms._touched = true; });
   renderLibraryList();
 }
-function renderLibraryList() {
-  let dl = $("libList");
-  if (!dl) { dl = h("datalist", { id: "libList" }); document.body.append(dl); }
-  dl.replaceChildren(...S.library.slice(0, 300).map((f) => h("option", { value: String(f.name) })));
+function renderLibraryList() { $("libList")?.remove(); } // the old native datalist; suggestions now come from foodCombo
+
+// Past-food suggestions under the Food field: a short, scrollable list instead of the browser's
+// datalist, which can't be styled and fills the whole screen. Every word typed must match.
+function foodCombo(input, onPick) {
+  const list = h("ul", { class: "suggest", role: "listbox", id: "foodSuggest", hidden: true });
+  input.setAttribute("role", "combobox"); input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", "foodSuggest"); input.setAttribute("aria-expanded", "false");
+  let hits = [], at = -1;
+  const close = () => { list.hidden = true; at = -1; input.setAttribute("aria-expanded", "false"); input.removeAttribute("aria-activedescendant"); };
+  const mark = () => [...list.children].forEach((li, i) => {
+    li.setAttribute("aria-selected", String(i === at));
+    if (i === at) { input.setAttribute("aria-activedescendant", li.id); li.scrollIntoView({ block: "nearest" }); }
+  });
+  const choose = (f) => { input.value = String(f.name); close(); onPick(); };
+  const show = () => {
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    hits = S.library.filter((f) => f && f.name && words.every((w) => String(f.name).toLowerCase().includes(w))).slice(0, 30);
+    if (!hits.length || (hits.length === 1 && String(hits[0].name).toLowerCase() === input.value.trim().toLowerCase())) { close(); return; }
+    at = -1;
+    list.replaceChildren(...hits.map((f, i) => h("li", { role: "option", id: `fs-${i}`, "aria-selected": "false",
+      onpointerdown: (e) => e.preventDefault(), onclick: () => choose(f) },
+      h("span", { class: "nm" }, String(f.name)), f.kcal != null ? h("span", { class: "kc num" }, `${fmt(f.kcal)} cal`) : null)));
+    list.hidden = false; list.scrollTop = 0; input.setAttribute("aria-expanded", "true");
+  };
+  input.addEventListener("input", show);
+  input.addEventListener("focus", () => { if (input.value.trim()) show(); });
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    if (list.hidden) { if (e.key === "ArrowDown") { show(); e.preventDefault(); } return; }
+    if (e.key === "ArrowDown") { at = Math.min(hits.length - 1, at + 1); mark(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { at = Math.max(0, at - 1); mark(); e.preventDefault(); }
+    else if (e.key === "Enter" && at >= 0) { choose(hits[at]); e.preventDefault(); }
+    else if (e.key === "Escape") { close(); e.preventDefault(); }
+  });
+  return h("div", { class: "combo" }, input, list);
 }
 function renderToday() {
   const v = $("v-today");
@@ -966,11 +1083,12 @@ function renderToday() {
         d.weight != null ? ` Weighed in at ${d.weight} lb.` : ""));
   }
   if (todayForms && !todayForms._touched) { todayForms._meal.value = defaultMeal(); }
-  v.replaceChildren(h("div", { class: "stack" },
-    programCard(d),
-    summary,
-    h("section", { class: "card" }, h("h2", {}, "Food today"), foodList(d, true)),
-    todayForms));
+  v.replaceChildren(viewTabs("today"), viewSec("today") === "check"
+    ? h("div", { class: "stack" }, programOn() ? programCard(d) : basicChecklist(d))
+    : h("div", { class: "stack" },
+      summary,
+      h("section", { class: "card" }, h("h2", {}, "Food today"), foodList(d, true)),
+      todayForms));
 }
 
 // ---------- Noom-style program: 16 weeks, one short lesson a day ----------
@@ -1508,6 +1626,7 @@ const ICONS = {
   steps: '<path d="M7 14c-1.5 0-3-1.5-3-4s1-5 3-5 3 2 3 4-1 5-3 5zM8 18a2 2 0 1 1-4 0v-2h4zM17 18c1.5 0 3-1.5 3-4s-1-5-3-5-3 2-3 4 1 5 3 5zM16 22a2 2 0 1 0 4 0v-2h-4z"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 function icon(name) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1649,6 +1768,24 @@ function taskRow({ ic, title, sub, done, meter, onclick, thumb }) {
       meter != null ? h("div", { class: "meter" }, h("div", { style: `width:${Math.min(100, Math.round(meter * 100))}%` })) : null),
     onclick ? h("span", { class: "go", "aria-hidden": "true" }, "›") : null));
 }
+// The checklist for people without the lesson program (classic mode).
+function basicChecklist(d) {
+  const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
+  const W = waterPlan(), water = waterCount(S.days[S.today], W);
+  const tasks = [
+    { ic: "meal", title: meals.length === 3 ? "Meals logged" : "Log your meals", sub: `${meals.length} of 3 meals logged today${d.items.length ? ` · ${fmt(d.cal)} cal` : ""}`, done: meals.length === 3, meter: meals.length / 3, onclick: () => setViewSec("today", "log") },
+    d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
+    { ic: "drop", title: water >= W.goal ? "Water goal met" : "Drink water", sub: `${water} of ${W.goal} ${waterWord(W, W.goal)}`, done: water >= W.goal, meter: water / W.goal, onclick: openWater },
+  ];
+  if (S.prof.activity && d.steps != null) {
+    const goal = Number(S.prof.stepGoal) || 6000;
+    tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
+  }
+  const n = tasks.filter((t) => t.done).length;
+  return h("section", { class: "card program" },
+    h("div", { class: "phead", style: "margin-bottom:12px" }, h("h2", {}, "Today"), h("span", { class: "small muted num" }, `${n} of ${tasks.length} done`)),
+    h("ul", { class: "tlist" }, tasks.map(taskRow)));
+}
 function programCard(d) {
   if (!programOn()) return null;
   if (S.program === undefined) return null;
@@ -1657,7 +1794,7 @@ function programCard(d) {
   const P0 = prog();
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
   const W = waterPlan(), water = waterCount(S.days[S.today], W);
-  const toForms = () => todayForms?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const toForms = () => setViewSec("today", "log");
   const tasks = [
     { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: toForms },
     d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
@@ -1901,8 +2038,7 @@ function lostCard(lost) {
       h("div", { class: "bar", "aria-hidden": "true" }, h("div", { style: `width:${Math.round(((lost - LOST_AS_MUCH[k][0]) / (next[0] - LOST_AS_MUCH[k][0])) * 100)}%` })))
       : h("p", { class: "next small muted" }, "That's the top of the list. Incredible work."));
 }
-function renderWeight() {
-  const v = $("v-weight");
+function renderWeight(v) {
   const pts = allDays().filter((d) => d.weight != null).map((d) => ({ date: d.date, w: d.weight }));
   if (!pts.length) { v.replaceChildren(h("p", { class: "card muted" }, "No weigh-ins yet. Log one on the Today tab or tell the coach.")); return; }
   const start = Number(S.prof.startWeight) || pts[0].w;
@@ -1916,8 +2052,7 @@ function renderWeight() {
     h("section", { class: "card" }, h("h2", {}, "Morning weight (lb)"), weightChart(pts, start),
       table(["Date", "Weight", "Change"], [...pts].reverse().map((p) => [dShort(p.date), p.w, (p.w - start).toFixed(1)])))));
 }
-function renderCalories() {
-  const v = $("v-calories");
+function renderCalories(v) {
   const days = allDays();
   if (baseFor(S.today) == null) { v.replaceChildren(h("p", { class: "card muted" }, "Calorie targets start after setup in Settings.")); return; }
   const logged = days.filter((d) => d.items.length && d.target != null);
@@ -1938,10 +2073,18 @@ function renderCalories() {
       table(["Date", "Eaten", "Target", "Diff"], [...logged].reverse().map((d) => [dShort(d.date), fmt(d.cal), fmt(d.target), (d.cal > d.target ? "+" : "") + fmt(d.cal - d.target)])))));
 }
 function renderHistory() {
-  const v = $("v-history");
+  const root = $("v-history"), sec = viewSec("history");
+  const old = root.querySelector(".histbody");
+  const v = h("div", { class: "histbody" });
+  if (sec === "weight") renderWeight(v);
+  else if (sec === "calories") renderCalories(v);
+  else renderFood(v, old);
+  root.replaceChildren(viewTabs("history"), v);
+}
+function renderFood(v, old) {
   const list = allDays().filter((d) => d.items.length).reverse();
   if (!list.length) { v.replaceChildren(h("p", { class: "card muted" }, "Nothing logged yet.")); return; }
-  const open = new Set([...v.querySelectorAll("details[open]")].map((d) => d.dataset.date));
+  const open = new Set([...(old?.querySelectorAll("details[open]") || [])].map((d) => d.dataset.date));
   v.replaceChildren(h("div", { class: "stack", style: "gap:10px" }, list.map((d, n) =>
     h("details", { class: "card day", "data-date": d.date, open: open.size ? open.has(d.date) : n === 0 },
       h("summary", {}, h("span", {}, dShort(d.date), d.date === S.today ? h("span", { class: "muted" }, " · today") : null),
@@ -2046,6 +2189,7 @@ function renderSettings() {
       h("label", { class: "field" }, "Custom instructions (optional)", f.notes),
       h("label", { class: "field" }, "Coach speed", f.tier)],
     look: [
+      avatarSetting(),
       h("label", { class: "field" }, "Theme", f.theme),
       h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.photos, "Show photos"),
       h("p", { class: "small muted" }, "Changes show right away; Save keeps them for you on every device. Photos are free stock photos from Unsplash.")],
@@ -2773,7 +2917,7 @@ function savedBubble(m) {
   });
   b.addEventListener("pointerup", () => { const go = horiz && Math.abs(dx) > 80; reset(); if (go) ask(); });
   b.addEventListener("pointercancel", reset);
-  return wrap;
+  return chatRow(m.role === "user" ? "user" : "bot", wrap);
 }
 // An alert-style popup centered over the page. Resolves true only on the confirm button;
 // Cancel, Escape or a tap outside resolve false.
@@ -2867,12 +3011,12 @@ function renderChat() {
   renderDaybar();
   const kids = S.chat.messages.map(savedBubble);
   if (!kids.length && !S.pending) {
-    kids.push(h("div", { class: "msg bot" },
-      h("p", {}, `Hi ${S.prof.name}. Tell me what you ate, send a photo of your plate or a label, log your weight, or ask how things are going.`)));
+    kids.push(chatRow("bot", h("div", { class: "msg bot" },
+      h("p", {}, `Hi ${S.prof.name}. Tell me what you ate, send a photo of your plate or a label, log your weight, or ask how things are going.`))));
   }
   const ci = !S.busy && composeCheckin();
   S.checkin = ci || null;
-  if (ci) kids.push(bubble({ role: "assistant", kind: "checkin", slot: ci.slot, text: ci.text }));
+  if (ci) kids.push(chatRow("bot", bubble({ role: "assistant", kind: "checkin", slot: ci.slot, text: ci.text })));
   if (S.pending) kids.push(S.pending.el);
   coachEls.list.replaceChildren(...kids);
   fitHint(composerHint());
@@ -2945,7 +3089,7 @@ async function sendMessage() {
   const chips = [];
   const body = h("div", {}, h("p", { class: "typing" }, "Thinking…"));
   const chipBox = h("div", { class: "chips", hidden: true });
-  S.pending = { el: h("div", { class: "msg bot" }, chipBox, body) };
+  S.pending = { el: chatRow("bot", h("div", { class: "msg bot" }, chipBox, body)) };
   const chip = (label) => { chips.push(label); chipBox.hidden = false; chipBox.append(h("span", {}, "✓ " + label)); };
 
   E.ta.value = ""; E.ta.style.height = ""; E.ta.style.overflowY = "";

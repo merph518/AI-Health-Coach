@@ -24,6 +24,8 @@ Feedback tab or the coach's `send_feedback` tool.
   stepGoal (Activity tab; default 6000, step task shows only when activity tracking is on),
   waterUnit glass|s16|m24|l32 (8/16/24/32 oz) and waterGoal (count a day; default about 64 oz),
   theme light|dark|system and photos (Appearance; default light with photos),
+  avatar (optional photo from Appearance: a 192px JPEG data URL, shown on their chat messages and the
+  person switcher; the coach has a fixed sprout avatar),
   coachNotes (custom instructions), targets: [{from, kcal, basis}]). For Leah and Eve the
   prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
 - `people/{pid}/days/{YYYY-MM-DD}`: items [{id, meal, item, qty, kcal, p, c, f, grams?,
