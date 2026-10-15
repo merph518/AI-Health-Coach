@@ -60,6 +60,7 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .hero span { font-size: 13px; color: var(--ink-2); }
 .hero strong { font-size: 28px; font-weight: 650; letter-spacing: -.02em; }
 .hero small { font-size: 12px; color: var(--ink-3); }
+.hero strong .unit { font-size: 15px; font-weight: 500; font-style: normal; letter-spacing: 0; color: var(--ink-3); margin-left: 3px; }
 .bar { height: 10px; background: var(--surface-2); border-radius: 99px; overflow: hidden; margin: 14px 0 12px; }
 .bar > div { height: 100%; border-radius: 99px; }
 .macros { display: flex; gap: 18px; flex-wrap: wrap; }
@@ -1731,23 +1732,67 @@ function table(head, rows) {
 }
 
 // ---------- Weight / Calories / History ----------
-// Fun "you've lost as much as..." comparisons, from 10 lb up (approximate everyday weights).
+// Fun "you've lost as much as..." comparisons, one every 5 lb from 10 to 300 (approximate typical weights).
 const LOST_AS_MUCH = [
   [10, "🥔", "a sack of potatoes"],
   [15, "🎳", "a bowling ball"],
   [20, "🦃", "a Thanksgiving turkey"],
   [25, "🛞", "a car tire"],
   [30, "🐶", "a beagle"],
+  [35, "🍉", "a giant watermelon"],
   [40, "💧", "a full 5-gallon water jug"],
   [45, "🏋️", "an Olympic barbell"],
   [50, "🧳", "a fully packed checked suitcase"],
+  [55, "🍺", "a small keg of beer"],
+  [60, "🦫", "a beaver"],
   [65, "🐕", "a golden retriever"],
+  [70, "🎄", "a real Christmas tree"],
+  [75, "🐆", "a cheetah"],
   [80, "🧱", "a big bag of concrete mix"],
+  [85, "🐧", "an emperor penguin"],
+  [90, "🎃", "a giant pumpkin"],
+  [95, "🥊", "a heavy punching bag"],
   [100, "🐑", "a sheep"],
+  [105, "🦌", "a white-tailed deer"],
+  [110, "🐕‍🦺", "a Great Dane"],
+  [115, "🐗", "a wild boar"],
+  [120, "🐒", "a chimpanzee"],
+  [125, "🦒", "a newborn giraffe"],
   [130, "🦘", "a kangaroo"],
+  [135, "🛋️", "a loveseat"],
+  [140, "🎳", "nine bowling balls"],
+  [145, "🐷", "a potbellied pig"],
+  [150, "🦭", "a harbor seal"],
+  [155, "🛵", "a moped"],
   [160, "🐼", "a giant panda"],
+  [165, "🐻", "a black bear"],
+  [170, "🐆", "a jaguar"],
+  [175, "🦌", "a white-tailed buck"],
+  [180, "🐺", "two gray wolves"],
+  [185, "🛋️", "a full-size sofa"],
+  [190, "🦙", "an alpaca"],
+  [195, "🐧", "two emperor penguins"],
+  [200, "🦃", "ten Thanksgiving turkeys"],
+  [205, "🐊", "an 8-foot alligator"],
+  [210, "🍉", "six giant watermelons"],
+  [215, "🦍", "a female gorilla"],
   [220, "🐘", "a newborn baby elephant"],
-  [300, "🦍", "a gorilla"],
+  [225, "🏋️", "a barbell loaded with two plates a side"],
+  [230, "🛵", "a Vespa scooter"],
+  [235, "🎳", "fifteen bowling balls"],
+  [240, "🐢", "a green sea turtle"],
+  [245, "🛢️", "a 30-gallon drum of water"],
+  [250, "🦁", "a lioness"],
+  [255, "🦭", "an elephant seal pup"],
+  [260, "🐖", "a market-weight pig"],
+  [265, "🧊", "a full-size refrigerator"],
+  [270, "🐶", "nine beagles"],
+  [275, "🐅", "a tigress"],
+  [280, "🐏", "a big ram"],
+  [285, "🦙", "a llama"],
+  [290, "🦈", "a bull shark"],
+  [295, "🛞", "twelve car tires"],
+  [300, "🦍", "a silverback gorilla"],
 ];
 function lostCard(lost) {
   if (!(lost >= LOST_AS_MUCH[0][0])) return null;
@@ -1763,6 +1808,7 @@ function lostCard(lost) {
       h("div", { class: "bar", "aria-hidden": "true" }, h("div", { style: `width:${Math.round(((lost - LOST_AS_MUCH[k][0]) / (next[0] - LOST_AS_MUCH[k][0])) * 100)}%` })))
       : h("p", { class: "next small muted" }, "That's the top of the list. Incredible work."));
 }
+const LB = () => h("em", { class: "unit" }, "lb");
 function renderWeight() {
   const v = $("v-weight");
   const pts = allDays().filter((d) => d.weight != null).map((d) => ({ date: d.date, w: d.weight }));
@@ -1771,9 +1817,9 @@ function renderWeight() {
   const last = pts[pts.length - 1], low = pts.reduce((a, b) => (b.w < a.w ? b : a)), chg = last.w - start;
   v.replaceChildren(h("div", { class: "stack" },
     h("section", { class: "card" }, h("div", { class: "hero" },
-      h("div", {}, h("span", {}, "Latest"), h("strong", { class: "num" }, last.w), h("small", {}, dShort(last.date))),
-      h("div", {}, h("span", {}, chg <= 0 ? "Down" : "Up"), h("strong", { class: "num", style: `color:var(${chg <= 0 ? "--good" : "--warn"})` }, Math.abs(chg).toFixed(1)), h("small", {}, `since ${S.prof.startDate ? dShort(S.prof.startDate) : "start"}`)),
-      h("div", {}, h("span", {}, "Lowest"), h("strong", { class: "num" }, low.w), h("small", {}, dShort(low.date))))),
+      h("div", {}, h("span", {}, "Latest"), h("strong", { class: "num" }, last.w, LB()), h("small", {}, dShort(last.date))),
+      h("div", {}, h("span", {}, chg <= 0 ? "Down" : "Up"), h("strong", { class: "num", style: `color:var(${chg <= 0 ? "--good" : "--warn"})` }, Math.abs(chg).toFixed(1), LB()), h("small", {}, `since ${S.prof.startDate ? dShort(S.prof.startDate) : "start"}`)),
+      h("div", {}, h("span", {}, "Lowest"), h("strong", { class: "num" }, low.w, LB()), h("small", {}, dShort(low.date))))),
     lostCard(start - last.w),
     h("section", { class: "card" }, h("h2", {}, "Morning weight (lb)"), weightChart(pts, start),
       table(["Date", "Weight", "Change"], [...pts].reverse().map((p) => [dShort(p.date), p.w, (p.w - start).toFixed(1)])))));
