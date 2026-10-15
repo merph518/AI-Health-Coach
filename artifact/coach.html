@@ -194,7 +194,7 @@ html[data-theme="light"] .toast button { color: #8fe0d5; }
 html[data-theme="light"] dialog.sheet, html[data-theme="light"] dialog.confirm { border: 0; border-radius: 22px; box-shadow: 0 24px 60px rgba(29,42,42,.25); }
 html[data-theme="light"] dialog.sheet::backdrop, html[data-theme="light"] dialog.confirm::backdrop { background: rgba(29,42,42,.45); }
 html[data-theme="light"] .picker .btn { border-radius: 18px; border: 0; border-left: 6px solid var(--accent); box-shadow: var(--shadow); background: var(--surface); }
-html[data-theme="light"] .subtab { background: var(--surface); }
+html[data-theme="light"] .subtab:not([aria-selected="true"]) { background: var(--surface); }
 html[data-theme="light"] .choice { background: var(--surface); }
 html[data-theme="light"] .lcard { background: var(--surface-2); }
 
