@@ -249,6 +249,9 @@ html[data-theme="light"] .task .meter { background: var(--bg); }
 .glass.on .fill { opacity: 1; }
 .glass .cup { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linejoin: round; }
 .glass .band { stroke-width: 1.5; opacity: .5; }
+.glass.more { display: grid; place-items: center; align-self: center; }
+.glass.more span { width: 34px; height: 34px; border-radius: 50%; border: 2px dashed currentColor; display: grid; place-items: center; font-size: 22px; line-height: 1; font-weight: 600; }
+.glass.more:hover span { background: color-mix(in srgb, currentColor 12%, transparent); }
 .glasses.w-s16 .glass { width: 40px; height: 66px; }
 .glasses.w-m24 .glass { width: 46px; height: 80px; }
 .glasses.w-l32 .glass { width: 52px; height: 94px; }
@@ -1541,7 +1544,7 @@ function waterSvg(u) {
 function openWater() {
   const dlg = sheet("Water");
   let W = waterPlan();
-  let n = Math.min(W.goal, waterCount(S.days[S.today], W));
+  let n = waterCount(S.days[S.today], W);
   const title = h("h2", { class: "center serif" });
   const sub = h("p", { class: "center small muted" });
   const hint = h("p", { class: "center small muted" });
@@ -1551,12 +1554,15 @@ function openWater() {
     sub.textContent = `${n} of ${W.goal} ${waterWord(W, W.goal)} · ${n * W.oz} of ${W.goal * W.oz} fl oz`;
     hint.textContent = `Tap a ${W.one} each time you finish one. Water helps with fullness and energy.`;
     grid.className = `glasses w-${W.u}`;
-    grid.replaceChildren(...Array.from({ length: W.goal }, (_, i) => {
-      const b = h("button", { type: "button", class: `glass${i < n ? " on" : ""}`, "aria-label": `${i + 1} ${waterWord(W, i + 1)}`, "aria-pressed": String(i < n),
+    grid.replaceChildren(...Array.from({ length: Math.max(W.goal, n) }, (_, i) => {
+      const b = h("button", { type: "button", class: `glass${i < n ? " on" : ""}${i >= W.goal ? " extra" : ""}`, "aria-label": `${i + 1} ${waterWord(W, i + 1)}`, "aria-pressed": String(i < n),
         onclick: () => { n = i + 1 === n ? i : i + 1; draw(); save(); } });
       b.append(waterSvg(W.u));
       return b;
     }));
+    // Goal met: offer one more past it.
+    if (n >= W.goal) grid.append(h("button", { type: "button", class: "glass more", "aria-label": `Add another ${W.one}`, title: `Add another ${W.one}`,
+      onclick: () => { n += 1; draw(); save(); } }, h("span", { "aria-hidden": "true" }, "+")));
     drawGoal();
   };
   let timer;
@@ -1568,7 +1574,7 @@ function openWater() {
   const setPlan = (u, goal) => {
     const oz = n * W.oz;
     W = { u, ...WATER_UNITS[u], goal };
-    n = Math.min(goal, Math.round(oz / W.oz));
+    n = Math.round(oz / W.oz);
     draw(); save();
     clearTimeout(saveGoalTimer);
     saveGoalTimer = setTimeout(() => mutateProfile((x) => { if (x.waterUnit === u && x.waterGoal === goal) return false; x.waterUnit = u; x.waterGoal = goal; }).then(renderAll).catch((e) => toast(writeError(e))), 350);
@@ -1645,7 +1651,7 @@ function programCard(d) {
   prepareTodaysLesson();
   const P0 = prog();
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
-  const W = waterPlan(), water = Math.min(W.goal, waterCount(S.days[S.today], W));
+  const W = waterPlan(), water = waterCount(S.days[S.today], W);
   const toForms = () => todayForms?.scrollIntoView({ behavior: "smooth", block: "start" });
   const tasks = [
     { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: toForms },
