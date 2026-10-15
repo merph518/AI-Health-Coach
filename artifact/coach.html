@@ -266,6 +266,16 @@ dialog.sheet.player > * + * { margin-top: 0; }
 html[data-photos="on"] .nophoto-art { display: none; }
 .art { align-self: center; width: 132px; height: 132px; border-radius: 42% 58% 55% 45% / 50% 45% 55% 50%; background: var(--accent-soft); display: grid; place-items: center; }
 .art span { font-size: 66px; line-height: 1; animation: pop .45s cubic-bezier(.3,1.6,.5,1) both; }
+.brag { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: center; }
+.brag .art { width: 104px; height: 104px; }
+.brag .art span { font-size: 56px; }
+.brag .kicker { margin: 0 0 2px; text-align: left; }
+.brag h2 { margin: 0; font-size: 20px; line-height: 1.25; }
+.brag .next { grid-column: 1 / -1; display: grid; gap: 6px; }
+.brag .bar { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+html[data-theme="light"] .brag .bar { background: var(--bg); }
+.brag .bar > div { height: 100%; border-radius: 99px; background: var(--accent); }
+@media (max-width: 380px) { .brag { grid-template-columns: 1fr; justify-items: center; text-align: center; } .brag .kicker { text-align: center; } }
 .art.pulse span { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pop { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes pulse { 50% { transform: scale(1.12); } }
@@ -1721,6 +1731,38 @@ function table(head, rows) {
 }
 
 // ---------- Weight / Calories / History ----------
+// Fun "you've lost as much as..." comparisons, from 10 lb up (approximate everyday weights).
+const LOST_AS_MUCH = [
+  [10, "🥔", "a sack of potatoes"],
+  [15, "🎳", "a bowling ball"],
+  [20, "🦃", "a Thanksgiving turkey"],
+  [25, "🛞", "a car tire"],
+  [30, "🐶", "a beagle"],
+  [40, "💧", "a full 5-gallon water jug"],
+  [45, "🏋️", "an Olympic barbell"],
+  [50, "🧳", "a fully packed checked suitcase"],
+  [65, "🐕", "a golden retriever"],
+  [80, "🧱", "a big bag of concrete mix"],
+  [100, "🐑", "a sheep"],
+  [130, "🦘", "a kangaroo"],
+  [160, "🐼", "a giant panda"],
+  [220, "🐘", "a newborn baby elephant"],
+  [300, "🦍", "a gorilla"],
+];
+function lostCard(lost) {
+  if (!(lost >= LOST_AS_MUCH[0][0])) return null;
+  const k = LOST_AS_MUCH.findLastIndex(([lb]) => lost >= lb);
+  const [, art, what] = LOST_AS_MUCH[k];
+  const next = LOST_AS_MUCH[k + 1];
+  const lb = (x) => `${+x.toFixed(1)} lb`;
+  return h("section", { class: "card brag" },
+    h("div", { class: "art" }, h("span", { role: "img", "aria-label": what }, art)),
+    h("div", {}, h("p", { class: "kicker" }, `${lb(lost)} lost`), h("h2", { class: "serif" }, `You've lost as much weight as ${what}!`)),
+    next ? h("div", { class: "next small muted" },
+      h("span", {}, `${lb(next[0] - lost)} more to ${next[2]} ${next[1]}`),
+      h("div", { class: "bar", "aria-hidden": "true" }, h("div", { style: `width:${Math.round(((lost - LOST_AS_MUCH[k][0]) / (next[0] - LOST_AS_MUCH[k][0])) * 100)}%` })))
+      : h("p", { class: "next small muted" }, "That's the top of the list. Incredible work."));
+}
 function renderWeight() {
   const v = $("v-weight");
   const pts = allDays().filter((d) => d.weight != null).map((d) => ({ date: d.date, w: d.weight }));
@@ -1732,6 +1774,7 @@ function renderWeight() {
       h("div", {}, h("span", {}, "Latest"), h("strong", { class: "num" }, last.w), h("small", {}, dShort(last.date))),
       h("div", {}, h("span", {}, chg <= 0 ? "Down" : "Up"), h("strong", { class: "num", style: `color:var(${chg <= 0 ? "--good" : "--warn"})` }, Math.abs(chg).toFixed(1)), h("small", {}, `since ${S.prof.startDate ? dShort(S.prof.startDate) : "start"}`)),
       h("div", {}, h("span", {}, "Lowest"), h("strong", { class: "num" }, low.w), h("small", {}, dShort(low.date))))),
+    lostCard(start - last.w),
     h("section", { class: "card" }, h("h2", {}, "Morning weight (lb)"), weightChart(pts, start),
       table(["Date", "Weight", "Change"], [...pts].reverse().map((p) => [dShort(p.date), p.w, (p.w - start).toFixed(1)])))));
 }
