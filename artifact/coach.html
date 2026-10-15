@@ -154,7 +154,7 @@ details.day > summary::-webkit-details-marker { display: none; }
 
 .chat { display: grid; gap: 10px; padding-bottom: 8px; }
 .msg { max-width: 88%; padding: 10px 13px; border-radius: 16px; font-size: 15px; overflow-wrap: anywhere; }
-.msg p + p, .msg p + ul, .msg ul + p, .msg p + ol, .msg ol + p { margin-top: 8px; }
+.msg p + p, .msg p + ul, .msg ul + p, .msg p + ol, .msg ol + p, .msg ul + ol, .msg ol + ul { margin-top: 8px; }
 .msg ul, .msg ol { padding-left: 20px; }
 .msg.user { justify-self: end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; }
 .msg.bot { justify-self: start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
@@ -182,7 +182,10 @@ dialog.confirm .acts { display: flex; justify-content: flex-end; gap: 8px; }
 .composer textarea::placeholder { white-space: nowrap; overflow: hidden; }
 .quicklog .qlout { background: var(--surface-2); border-radius: 14px; padding: 10px 12px; }
 html[data-theme="light"] .quicklog .qlout { background: var(--bg); }
-.quicklog .qlout p { margin: 0 0 6px; } .quicklog .qlout p:last-child { margin: 0; }
+.quicklog .qlout p, .quicklog .qlout ul, .quicklog .qlout ol { margin: 0 0 8px; }
+.quicklog .qlout ul, .quicklog .qlout ol { padding-left: 22px; }
+.quicklog .qlout li + li { margin-top: 2px; }
+.quicklog .qlout > :last-child { margin-bottom: 0; }
 .reclist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .reclist li { display: flex; align-items: center; gap: 10px; }
 .recname { flex: 1; min-width: 0; display: grid; gap: 2px; text-align: left; background: var(--surface-2); border: 0; border-radius: 14px; padding: 10px 12px; color: var(--ink); font: inherit; cursor: pointer; }
@@ -3538,11 +3541,20 @@ let coachEls = null;
 function formatted(text) {
   const frag = document.createDocumentFragment();
   const inline = (s) => s.split(/(\*\*[^*]+\*\*)/g).map((part) => (part.startsWith("**") && part.endsWith("**") && part.length > 4 ? h("strong", {}, part.slice(2, -2)) : part));
+  // Within a paragraph, runs of bullet or numbered lines become a list and the other lines a paragraph,
+  // so "- a\n- b\nTotal: …" renders as a list followed by text.
+  const UL = /^\s*[-*•]\s+/, OL = /^\s*\d+[.)]\s+/;
+  const kind = (l) => (UL.test(l) ? "ul" : OL.test(l) ? "ol" : "p");
   for (const para of String(text).trim().split(/\n{2,}/)) {
-    const lines = para.split("\n");
-    if (lines.every((l) => /^\s*[-*•]\s+/.test(l))) frag.append(h("ul", {}, lines.map((l) => h("li", {}, inline(l.replace(/^\s*[-*•]\s+/, ""))))));
-    else if (lines.every((l) => /^\s*\d+[.)]\s+/.test(l))) frag.append(h("ol", {}, lines.map((l) => h("li", {}, inline(l.replace(/^\s*\d+[.)]\s+/, ""))))));
-    else frag.append(h("p", {}, lines.map((l, j) => [j ? h("br") : null, inline(l)])));
+    let run = [], k = null;
+    const flush = () => {
+      if (!run.length) return;
+      if (k === "p") frag.append(h("p", {}, run.map((l, j) => [j ? h("br") : null, inline(l)])));
+      else frag.append(h(k, {}, run.map((l) => h("li", {}, inline(l.replace(k === "ul" ? UL : OL, ""))))));
+      run = [];
+    };
+    for (const l of para.split("\n").filter((x) => x.trim())) { if (kind(l) !== k) { flush(); k = kind(l); } run.push(l); }
+    flush();
   }
   return frag;
 }
