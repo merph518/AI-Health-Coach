@@ -248,6 +248,28 @@ html[data-theme="light"] .task .meter { background: var(--bg); }
 .glass .fill { fill: currentColor; opacity: 0; transition: opacity .15s; }
 .glass.on .fill { opacity: 1; }
 .glass .cup { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linejoin: round; }
+.glass .band { stroke-width: 1.5; opacity: .5; }
+.glasses.w-s16 .glass { width: 40px; height: 66px; }
+.glasses.w-m24 .glass { width: 46px; height: 80px; }
+.glasses.w-l32 .glass { width: 52px; height: 94px; }
+.wdetails { border-top: 1px solid var(--border); padding-top: 10px; }
+.wdetails summary { cursor: pointer; text-align: center; color: var(--link, var(--accent)); font-size: 14px; list-style: none; }
+.wdetails summary::-webkit-details-marker { display: none; }
+.wdetails[open] summary { margin-bottom: 12px; }
+.wunits { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.wunit { display: grid; justify-items: center; align-content: end; gap: 2px; padding: 10px 4px 8px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--ink); cursor: pointer; }
+.wunit.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.wunit strong { font-size: 12px; font-weight: 600; line-height: 1.2; text-align: center; }
+.wunit small { font-size: 11px; color: var(--ink-3); }
+.wico { color: #4aa8e8; display: block; margin-bottom: 4px; }
+.wico svg { width: 100%; height: 100%; }
+.wico .cup { fill: none; stroke: currentColor; stroke-width: 3; stroke-linejoin: round; }
+.wico .fill { fill: currentColor; opacity: .35; }
+.wico .band { stroke-width: 2; opacity: .5; }
+.wico.w-glass { width: 26px; height: 32px; } .wico.w-s16 { width: 20px; height: 34px; } .wico.w-m24 { width: 23px; height: 40px; } .wico.w-l32 { width: 26px; height: 46px; }
+.wstep { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; gap: 10px; margin-top: 12px; }
+.wstep .btn { padding: 0; height: 44px; font-size: 20px; }
+.wstep strong { font-size: 16px; }
 .center { text-align: center; }
 .program .nophoto { margin-bottom: 10px; } html[data-photos="on"] .program .nophoto { display: none; }
 
@@ -707,6 +729,9 @@ function renderAll() {
   if (S.tab === "coach") renderDaybar();
 }
 
+function LB() { return h("em", { class: "unit" }, "lb"); }
+function CAL() { return h("em", { class: "unit" }, "cal"); }
+
 let toastTimer;
 function toast(text, action) {
   const t = $("toast");
@@ -907,8 +932,8 @@ function renderToday() {
   if (target == null) {
     put(summary, 
       h("div", { class: "hero" },
-        h("div", {}, h("span", {}, "Eaten"), h("strong", { class: "num" }, fmt(d.cal))),
-        d.weight != null ? h("div", {}, h("span", {}, "Weight"), h("strong", { class: "num" }, d.weight)) : null),
+        h("div", {}, h("span", {}, "Eaten"), h("strong", { class: "num" }, fmt(d.cal), CAL())),
+        d.weight != null ? h("div", {}, h("span", {}, "Weight"), h("strong", { class: "num" }, d.weight, LB())) : null),
       h("div", { style: "margin-top:12px" }, macros(d)),
       h("p", { class: "small muted", style: "margin-top:10px" }, "Set up your calorie target in Settings to see what's left each day."));
   } else {
@@ -916,9 +941,9 @@ function renderToday() {
     const zone = zoneFor(target);
     put(summary, 
       h("div", { class: "hero" },
-        h("div", {}, h("span", {}, "Eaten"), h("strong", { class: "num" }, fmt(d.cal))),
-        h("div", {}, h("span", {}, zone ? "Budget" : "Target"), h("strong", { class: "num" }, fmt(target)), zone ? h("small", { class: "num" }, `zone ${fmt(zone.low)} to ${fmt(zone.high)}`) : null),
-        h("div", {}, h("span", {}, left >= 0 ? "Left" : "Over"), h("strong", { class: "num", style: `color:var(${left >= 0 ? "--good" : "--danger"})` }, fmt(Math.abs(left))))),
+        h("div", {}, h("span", {}, "Eaten"), h("strong", { class: "num" }, fmt(d.cal), CAL())),
+        h("div", {}, h("span", {}, zone ? "Budget" : "Target"), h("strong", { class: "num" }, fmt(target), CAL()), zone ? h("small", { class: "num" }, `zone ${fmt(zone.low)} to ${fmt(zone.high)}`) : null),
+        h("div", {}, h("span", {}, left >= 0 ? "Left" : "Over"), h("strong", { class: "num", style: `color:var(${left >= 0 ? "--good" : "--danger"})` }, fmt(Math.abs(left)), CAL()))),
       h("div", { class: "bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(target), "aria-valuenow": String(d.cal), "aria-label": "Calories eaten against target" },
         h("div", { style: `width:${Math.min(100, (d.cal / target) * 100)}%;background:var(${left >= 0 ? "--accent" : "--danger"})` })),
       macros(d),
@@ -1485,33 +1510,84 @@ function icon(name) {
 }
 
 // ---------- water ----------
-const WATER_GOAL = 8;
-function glassSvg() {
+// Each person picks what they drink from (profile waterUnit) and how many a day (waterGoal).
+// A day stores the count and the container it was counted in, so changing containers keeps the ounces.
+const WATER_UNITS = {
+  glass: { oz: 8, one: "glass", many: "glasses", label: "Glass", goal: 8 },
+  s16: { oz: 16, one: "small bottle", many: "small bottles", label: "Small bottle", goal: 4 },
+  m24: { oz: 24, one: "medium bottle", many: "medium bottles", label: "Medium bottle", goal: 3 },
+  l32: { oz: 32, one: "large bottle", many: "large bottles", label: "Large bottle", goal: 2 },
+};
+function waterPlan(prof = S.prof) {
+  const u = WATER_UNITS[prof?.waterUnit] ? prof.waterUnit : "glass";
+  const g = Number(prof?.waterGoal);
+  return { u, ...WATER_UNITS[u], goal: Number.isInteger(g) && g >= 1 && g <= 16 ? g : WATER_UNITS[u].goal };
+}
+const waterOz = (doc) => (Number(doc?.water) || 0) * (WATER_UNITS[doc?.waterUnit] || WATER_UNITS.glass).oz;
+const waterCount = (doc, W = waterPlan()) => Math.round(waterOz(doc) / W.oz);
+const waterWord = (W, k) => (k === 1 ? W.one : W.many);
+function waterSvg(u) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  s.setAttribute("viewBox", "0 0 40 50"); s.setAttribute("aria-hidden", "true");
-  s.innerHTML = '<path class="fill" d="M8.6 16h22.8l-2.6 28.2a3 3 0 0 1-3 2.8H14.2a3 3 0 0 1-3-2.8z"/><path class="cup" d="M5 4h30l-3.6 40.4A3 3 0 0 1 28.4 47H11.6a3 3 0 0 1-3-2.6z"/>';
+  s.setAttribute("aria-hidden", "true");
+  if (u === "glass") {
+    s.setAttribute("viewBox", "0 0 40 50");
+    s.innerHTML = '<path class="fill" d="M8.6 16h22.8l-2.6 28.2a3 3 0 0 1-3 2.8H14.2a3 3 0 0 1-3-2.8z"/><path class="cup" d="M5 4h30l-3.6 40.4A3 3 0 0 1 28.4 47H11.6a3 3 0 0 1-3-2.6z"/>';
+  } else {
+    s.setAttribute("viewBox", "0 0 40 80");
+    s.innerHTML = '<path class="fill" d="M9 32h22v37a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4z"/><rect class="cup" x="14" y="3" width="12" height="7" rx="2"/><path class="cup" d="M15.5 10v5c0 2-9 5-9 11v44a6 6 0 0 0 6 6h15a6 6 0 0 0 6-6V26c0-6-9-9-9-11v-5"/><path class="cup band" d="M6.5 40h27"/>';
+  }
   return s;
 }
 function openWater() {
   const dlg = sheet("Water");
-  let n = Math.min(WATER_GOAL, Number(S.days[S.today]?.water) || 0);
+  let W = waterPlan();
+  let n = Math.min(W.goal, waterCount(S.days[S.today], W));
+  const title = h("h2", { class: "center serif" });
   const sub = h("p", { class: "center small muted" });
+  const hint = h("p", { class: "center small muted" });
   const grid = h("div", { class: "glasses" });
   const draw = () => {
-    sub.textContent = `${n} of ${WATER_GOAL} glasses · ${n * 8} fl oz`;
-    grid.replaceChildren(...Array.from({ length: WATER_GOAL }, (_, i) => {
-      const b = h("button", { type: "button", class: `glass${i < n ? " on" : ""}`, "aria-label": `${i + 1} glass${i ? "es" : ""}`, "aria-pressed": String(i < n),
+    title.textContent = `Drink ${W.goal} ${waterWord(W, W.goal)} of water`;
+    sub.textContent = `${n} of ${W.goal} ${waterWord(W, W.goal)} · ${n * W.oz} of ${W.goal * W.oz} fl oz`;
+    hint.textContent = `Tap a ${W.one} each time you finish one. Water helps with fullness and energy.`;
+    grid.className = `glasses w-${W.u}`;
+    grid.replaceChildren(...Array.from({ length: W.goal }, (_, i) => {
+      const b = h("button", { type: "button", class: `glass${i < n ? " on" : ""}`, "aria-label": `${i + 1} ${waterWord(W, i + 1)}`, "aria-pressed": String(i < n),
         onclick: () => { n = i + 1 === n ? i : i + 1; draw(); save(); } });
-      b.append(glassSvg());
+      b.append(waterSvg(W.u));
       return b;
     }));
+    drawGoal();
   };
   let timer;
-  const save = () => { clearTimeout(timer); timer = setTimeout(() => mutateDay(S.today, (d) => { if ((Number(d.water) || 0) === n) return false; d.water = n; }).then(renderAll).catch((e) => toast(writeError(e))), 350); };
+  const save = () => { clearTimeout(timer); timer = setTimeout(() => mutateDay(S.today, (d) => { if ((Number(d.water) || 0) === n && (d.waterUnit || "glass") === W.u) return false; d.water = n; d.waterUnit = W.u; }).then(renderAll).catch((e) => toast(writeError(e))), 350); };
+
+  // Change what you drink from and how many.
+  const goalBox = h("div", { class: "watergoal" });
+  let saveGoalTimer;
+  const setPlan = (u, goal) => {
+    const oz = n * W.oz;
+    W = { u, ...WATER_UNITS[u], goal };
+    n = Math.min(goal, Math.round(oz / W.oz));
+    draw(); save();
+    clearTimeout(saveGoalTimer);
+    saveGoalTimer = setTimeout(() => mutateProfile((x) => { if (x.waterUnit === u && x.waterGoal === goal) return false; x.waterUnit = u; x.waterGoal = goal; }).then(renderAll).catch((e) => toast(writeError(e))), 350);
+  };
+  function drawGoal() {
+    goalBox.replaceChildren(
+      h("div", { class: "wunits", role: "radiogroup", "aria-label": "What you drink from" }, Object.entries(WATER_UNITS).map(([k, U]) =>
+        h("button", { type: "button", class: `wunit${k === W.u ? " on" : ""}`, role: "radio", "aria-checked": String(k === W.u),
+          onclick: () => { if (k !== W.u) setPlan(k, Math.max(1, Math.round((W.goal * W.oz) / U.oz))); } },
+          h("span", { class: `wico w-${k}` }, waterSvg(k)), h("strong", {}, U.label), h("small", {}, `${U.oz} oz`)))),
+      h("div", { class: "wstep" },
+        h("button", { type: "button", class: "btn", "aria-label": `One fewer ${W.one}`, disabled: W.goal <= 1, onclick: () => setPlan(W.u, W.goal - 1) }, "−"),
+        h("div", { class: "center" }, h("strong", { class: "num" }, `${W.goal} ${waterWord(W, W.goal)} a day`), h("small", { class: "muted" }, ` = ${W.goal * W.oz} fl oz`)),
+        h("button", { type: "button", class: "btn", "aria-label": `One more ${W.one}`, disabled: W.goal >= 16, onclick: () => setPlan(W.u, W.goal + 1) }, "+")));
+  }
+  const goalDetails = h("details", { class: "wdetails" }, h("summary", {}, "Change your water goal"), goalBox);
   put(dlg, h("div", { class: "sheet-head" }, h("span", {}), closeX(dlg)),
     photoImg(photoSrc("water"), "sheet-photo"),
-    h("h2", { class: "center serif" }, `Drink ${WATER_GOAL} glasses of water`), sub, grid,
-    h("p", { class: "center small muted" }, "Tap a glass each time you finish one. Water helps with fullness and energy."),
+    title, sub, grid, hint, goalDetails,
     h("div", { class: "center" }, h("button", { class: "btn btn-primary", type: "button", onclick: () => dlg.close() }, "Done")));
   draw();
 }
@@ -1542,7 +1618,7 @@ function dayScore(date) {
   const items = Array.isArray(doc.items) ? doc.items : [];
   const meals = ["breakfast", "lunch", "dinner"].filter((m) => items.some((i) => String(i.meal).toLowerCase() === m)).length;
   const lesson = Object.values(S.program?.done || {}).some((v) => v?.date === date);
-  return ((doc.weight != null ? 1 : 0) + meals / 3 + (lesson ? 1 : 0) + Math.min(1, (Number(doc.water) || 0) / WATER_GOAL)) / 4;
+  return ((doc.weight != null ? 1 : 0) + meals / 3 + (lesson ? 1 : 0) + Math.min(1, waterOz(doc) / (waterPlan().goal * waterPlan().oz))) / 4;
 }
 function weekStrip() {
   const dow = (new Date(S.today + "T12:00:00Z").getUTCDay() + 6) % 7;
@@ -1569,7 +1645,7 @@ function programCard(d) {
   prepareTodaysLesson();
   const P0 = prog();
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
-  const water = Math.min(WATER_GOAL, Number(S.days[S.today]?.water) || 0);
+  const W = waterPlan(), water = Math.min(W.goal, waterCount(S.days[S.today], W));
   const toForms = () => todayForms?.scrollIntoView({ behavior: "smooth", block: "start" });
   const tasks = [
     { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: toForms },
@@ -1578,7 +1654,7 @@ function programCard(d) {
   if (P0.finished) tasks.push({ ic: "book", title: "Program complete", sub: "Every lesson is done. Amazing!", done: true, onclick: openLessonList });
   else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `${(() => { const r = lessonProgress(lessonKey(P0.tk, P0.next.n)); return r ? `Pick up where you left off · screen ${r.i + 1} of ${r.n}` : "Today's lesson · about 5 minutes"; })()}${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
   else tasks.push({ ic: "book", title: "Lesson done", sub: P0.doneToday.length ? P0.doneToday[0].title || "Today's lesson" : "All caught up. Next lesson tomorrow.", done: true, onclick: openLessonList });
-  tasks.push({ ic: "drop", title: water >= WATER_GOAL ? "Water goal met" : "Drink water", sub: `${water} of ${WATER_GOAL} glasses`, done: water >= WATER_GOAL, meter: water / WATER_GOAL, onclick: openWater });
+  tasks.push({ ic: "drop", title: water >= W.goal ? "Water goal met" : "Drink water", sub: `${water} of ${W.goal} ${waterWord(W, W.goal)}`, done: water >= W.goal, meter: water / W.goal, onclick: openWater });
   if (S.prof.activity && d.steps != null) {
     const goal = Number(S.prof.stepGoal) || 6000;
     tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
@@ -1808,7 +1884,6 @@ function lostCard(lost) {
       h("div", { class: "bar", "aria-hidden": "true" }, h("div", { style: `width:${Math.round(((lost - LOST_AS_MUCH[k][0]) / (next[0] - LOST_AS_MUCH[k][0])) * 100)}%` })))
       : h("p", { class: "next small muted" }, "That's the top of the list. Incredible work."));
 }
-const LB = () => h("em", { class: "unit" }, "lb");
 function renderWeight() {
   const v = $("v-weight");
   const pts = allDays().filter((d) => d.weight != null).map((d) => ({ date: d.date, w: d.weight }));
@@ -1838,7 +1913,7 @@ function renderCalories() {
     .map((d) => ({ date: d.date, cal: d.cal, target: d.target, today: d.date === S.today }));
   v.replaceChildren(h("div", { class: "stack" },
     h("section", { class: "card" }, h("div", { class: "hero" },
-      h("div", {}, h("span", {}, "7-day avg"), h("strong", { class: "num" }, fmt(avg)), h("small", {}, `vs ${fmt(avgT)} target`)),
+      h("div", {}, h("span", {}, "7-day avg"), h("strong", { class: "num" }, fmt(avg), CAL()), h("small", {}, `vs ${fmt(avgT)} target`)),
       h("div", {}, h("span", {}, "At or under"), h("strong", { class: "num" }, `${under}/${done.length}`), h("small", {}, "full days")))),
     h("section", { class: "card" }, h("h2", {}, "Calories eaten vs. daily target"),
       h("p", { class: "small muted", style: "margin-bottom:8px" }, `Bars are calories eaten; the dark tick is that day's target${S.prof.activity ? " (base plus eat-back)" : ""}.`),
@@ -2275,7 +2350,7 @@ function context(message) {
   }
   const lw = latestWeight();
   if (lw) L.push(`Latest weight: ${lw.weight} lb on ${lw.date}.`);
-  if (programOn() && S.days[today]?.water) L.push(`Water today: ${S.days[today].water} of ${WATER_GOAL} glasses.`);
+  if (programOn() && S.days[today]?.water) { const W = waterPlan(); L.push(`Water today: ${waterCount(S.days[today], W)} of ${W.goal} ${W.many} (${waterOz(S.days[today])} of ${W.goal * W.oz} fl oz).`); }
   if (programOn() && S.program !== undefined) {
     const g = prog();
     L.push(`PROGRAM: ${g.name}, day ${g.day}, week ${g.week} of ${Math.ceil(g.total / 7)} (theme: ${g.theme}). ${g.finished ? "They've finished every lesson." : g.next ? `Next lesson to read: "${g.next.title || "this week's first lesson"}"${g.behind > 1 ? ` (${g.behind} waiting)` : ""}.` : "Today's lesson is done."}`);

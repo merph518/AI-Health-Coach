@@ -22,11 +22,12 @@ Feedback tab or the coach's `send_feedback` tool.
   bigPicture, coachTier, coachStyle brief|balanced|detailed, coachTone warm|direct|upbeat|calm|coach,
   activityLevel sedentary|light|moderate|very (maintenance multiplier 1.2/1.375/1.55/1.725),
   stepGoal (Activity tab; default 6000, step task shows only when activity tracking is on),
+  waterUnit glass|s16|m24|l32 (8/16/24/32 oz) and waterGoal (count a day; default about 64 oz),
   theme light|dark|system and photos (Appearance; default light with photos),
   coachNotes (custom instructions), targets: [{from, kcal, basis}]). For Leah and Eve the
   prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
 - `people/{pid}/days/{YYYY-MM-DD}`: items [{id, meal, item, qty, kcal, p, c, f, grams?,
-  color? green|yellow|orange, note?}] (nutrition per unit), weight, water (glasses of 8),
+  color? green|yellow|orange, note?}] (nutrition per unit), weight, water (count of that day's waterUnit, default glass),
   active, steps, partial
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
 - `people/{pid}/meta/program` (Noom-style only): track standard|custom, start {trackKey: date},
