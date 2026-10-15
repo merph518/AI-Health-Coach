@@ -259,6 +259,18 @@ html[data-theme="light"] .brand { font-family: var(--serif); font-weight: 600; c
 html[data-theme="light"] .tabs { background: var(--surface); }
 html[data-theme="light"] .tab[aria-selected="true"] { color: var(--ink); }
 html[data-theme="light"] h2, html[data-theme="light"] .picker h1, html[data-theme="light"] dialog h2, html[data-theme="light"] .serif { font-family: var(--serif); font-weight: 600; letter-spacing: -.01em; }
+/* Appearance → Font and Text size (profile font, textSize). "default" keeps the theme's own fonts. */
+html[data-font="system"] { --fb: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --fh: var(--fb); }
+html[data-font="rounded"] { --fb: "Nunito", system-ui, sans-serif; --fh: var(--fb); }
+html[data-font="readable"] { --fb: "Atkinson Hyperlegible", system-ui, sans-serif; --fh: var(--fb); }
+html[data-font="serif"] { --fb: "Lora", Georgia, "Times New Roman", serif; --fh: var(--fb); }
+html[data-font] body { font-family: var(--fb); }
+html[data-font] h2, html[data-font] .picker h1, html[data-font] dialog h2, html[data-font] .serif, html[data-font] .brand { font-family: var(--fh); }
+html[data-size="s"] body { zoom: .9; }
+html[data-size="l"] body { zoom: 1.12; }
+html[data-size="xl"] body { zoom: 1.25; }
+html[data-size="l"] .tab, html[data-size="xl"] .tab { padding-left: 6px; padding-right: 6px; }
+html[data-size="xl"] .tabs { gap: 0; }
 html[data-theme="light"] h2 { font-size: 18px; }
 html[data-theme="light"] .btn { border-radius: 999px; padding: 8px 16px; }
 html[data-theme="light"] .btn.who { background: var(--surface-2); border-color: transparent; }
@@ -1005,7 +1017,7 @@ function avatarSetting() {
   const file = h("input", { type: "file", accept: "image/*", hidden: true });
   const draw = () => box.replaceChildren(personAvatar(S.pid, "lg"),
     h("button", { class: "btn", type: "button", onclick: () => file.click() }, okAvatar(S.prof.avatar) ? "Change photo" : "Upload photo"),
-    okAvatar(S.prof.avatar) ? h("button", { class: "linkish small", type: "button", onclick: () => save(null) }, "Remove") : null, file);
+    ...(okAvatar(S.prof.avatar) ? [h("button", { class: "linkish small", type: "button", onclick: () => save(null) }, "Remove")] : []), file);
   const save = async (u) => {
     try { await mutateProfile((p) => { if (u) p.avatar = u; else delete p.avatar; }); toast(u ? "Photo saved." : "Photo removed."); draw(); refreshAvatars(); }
     catch (e) { toast(writeError(e)); }
@@ -2097,9 +2109,19 @@ async function setWeeklyGoal(text) {
 // is a JPEG data URL in the profile. Unset means the theme's own colors.
 const okHex = (c) => typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c) ? c.toLowerCase() : null;
 const okBgImage = (u) => typeof u === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(u) && u.length < 700000 ? u : null;
+// [key, label, Google Fonts family query or null]
+const FONTS = [["default", "Classic (the app's own)", null], ["system", "Your phone's font", null], ["rounded", "Rounded (Nunito)", "Nunito:wght@400;500;600;700"],
+  ["readable", "Extra readable (Atkinson Hyperlegible)", "Atkinson+Hyperlegible:wght@400;700"], ["serif", "Bookish serif (Lora)", "Lora:wght@400;500;600;700"]];
+const SIZES = [["s", "Small"], ["m", "Normal"], ["l", "Large"], ["xl", "Extra large"]];
+function loadFont(key) {
+  const q = FONTS.find((f) => f[0] === key)?.[2];
+  if (!q || document.querySelector(`link[data-font="${key}"]`)) return;
+  document.head.append(h("link", { rel: "stylesheet", "data-font": key, href: `https://fonts.googleapis.com/css2?family=${q}&display=swap` }));
+}
 function lookOf(prof) {
   const t = ["light", "dark", "system"].includes(prof?.theme) ? prof.theme : "light";
-  return { theme: t, photos: prof?.photos !== false, accent: okHex(prof?.accent), bg: okHex(prof?.bg), bgImage: okBgImage(prof?.bgImage) };
+  return { theme: t, photos: prof?.photos !== false, accent: okHex(prof?.accent), bg: okHex(prof?.bg), bgImage: okBgImage(prof?.bgImage),
+    font: FONTS.some((f) => f[0] === prof?.font) ? prof.font : "default", textSize: SIZES.some((z) => z[0] === prof?.textSize) ? prof.textSize : "m" };
 }
 function lum(hex) {
   const ch = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
@@ -2130,6 +2152,8 @@ function applyLook(look) {
   const root = document.documentElement, st = root.style;
   root.dataset.theme = dark ? "dark" : "light";
   root.dataset.photos = look.photos ? "on" : "off";
+  if (look.font && look.font !== "default") { loadFont(look.font); root.dataset.font = look.font; } else delete root.dataset.font;
+  if (look.textSize && look.textSize !== "m") root.dataset.size = look.textSize; else delete root.dataset.size;
   const a = okHex(look.accent);
   if (a) {
     const mixBase = dark ? "#151515" : "#ffffff";
@@ -2784,6 +2808,8 @@ function renderSettings() {
     pace: h("select", {}, [0.5, 1, 1.5, 2].map((x) => h("option", { value: String(x) }, `${x} lb per week`))),
     theme: h("select", {}, h("option", { value: "light" }, "Light"), h("option", { value: "dark" }, "Dark"), h("option", { value: "system" }, "Match my device")),
     photos: h("input", { type: "checkbox" }),
+    font: h("select", {}, FONTS.map(([k, l]) => h("option", { value: k }, l))),
+    textSize: h("select", {}, SIZES.map(([k, l]) => h("option", { value: k }, l))),
     meds: h("input", { type: "checkbox", checked: !p.hideMeds }),
     level: h("select", {}, ACT_LEVELS.map(([k, , label, desc]) => h("option", { value: k }, `${label}: ${desc}`))),
     why: h("textarea", { rows: "3", placeholder: "Your big picture: why this matters to you" }),
@@ -2803,8 +2829,10 @@ function renderSettings() {
   f.theme.value = lookOf(p).theme;
   f.photos.checked = lookOf(p).photos;
   const colors = { accent: lookOf(p).accent, bg: lookOf(p).bg, bgImage: lookOf(p).bgImage };
-  const previewLook = () => applyLook({ theme: f.theme.value, photos: f.photos.checked, ...colors });
-  f.theme.addEventListener("input", previewLook); f.photos.addEventListener("input", previewLook);
+  f.font.value = lookOf(p).font;
+  f.textSize.value = lookOf(p).textSize;
+  const previewLook = () => applyLook({ theme: f.theme.value, photos: f.photos.checked, font: f.font.value, textSize: f.textSize.value, ...colors });
+  for (const el of [f.theme, f.photos, f.font, f.textSize]) el.addEventListener("input", previewLook);
   const colorsBox = h("div", { class: "stack", style: "gap:14px" });
   const ACCENTS = ["#157a72", "#3b8cf0", "#7a4fd0", "#d6457a", "#e0602f", "#f0b429", "#2f9e4e", "#0e7490", "#4f46e5", "#1d2a2a"];
   const BGS = ["#f5f3ee", "#eef4f8", "#f3eefa", "#fdf3e7", "#eaf5ec", "#fbeef0", "#0a0a0a", "#0f172a", "#1a1325", "#10201a"];
@@ -2910,6 +2938,7 @@ function renderSettings() {
     look: [
       avatarSetting(),
       h("label", { class: "field" }, "Theme", f.theme),
+      h("div", { class: "row" }, h("label", { class: "field grow" }, "Font", f.font), h("label", { class: "field grow" }, "Text size", f.textSize)),
       colorsBox,
       h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.photos, "Show photos"),
       h("p", { class: "small muted" }, "Changes show right away; Save keeps them for you on every device. Photos are free stock photos from Unsplash.")],
@@ -2931,6 +2960,7 @@ function renderSettings() {
         x.activityLevel = f.level.value;
         x.theme = f.theme.value;
         x.photos = f.photos.checked;
+        x.font = f.font.value; x.textSize = f.textSize.value;
         if (f.meds.checked) delete x.hideMeds; else x.hideMeds = true;
         for (const k of ["accent", "bg", "bgImage"]) { if (colors[k]) x[k] = colors[k]; else delete x[k]; }
         x.bigPicture = f.why.value.trim().slice(0, 600);
