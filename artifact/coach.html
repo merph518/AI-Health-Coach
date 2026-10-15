@@ -160,8 +160,8 @@ details.day > summary::-webkit-details-marker { display: none; }
 .msg.bot { justify-self: start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .msg.err { border-color: var(--danger); }
 .msg .tag { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); margin-bottom: 4px; }
-.msg .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.msg .chips span { font-size: 12px; color: var(--good); background: var(--surface-2); border-radius: 99px; padding: 2px 8px; }
+.msg .chips, .quicklog .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.msg .chips span, .quicklog .chips span { font-size: 12px; color: var(--good); background: var(--surface-2); border-radius: 99px; padding: 2px 8px; }
 .msg.user .ph { font-size: 12px; opacity: .85; display: block; }
 .mwrap { display: grid; gap: 6px; max-width: 88%; }
 .mwrap.user { justify-self: end; justify-items: end; }
@@ -180,6 +180,9 @@ dialog.confirm .acts { display: flex; justify-content: flex-end; gap: 8px; }
 .composer .line { display: flex; gap: 8px; align-items: end; }
 .composer textarea { flex: 1; min-width: 0; resize: none; font-size: 16px; border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px; background: var(--surface); max-height: 160px; min-height: 42px; line-height: 22px; overflow-y: hidden; }
 .composer textarea::placeholder { white-space: nowrap; overflow: hidden; }
+.quicklog .qlout { background: var(--surface-2); border-radius: 14px; padding: 10px 12px; }
+html[data-theme="light"] .quicklog .qlout { background: var(--bg); }
+.quicklog .qlout p { margin: 0 0 6px; } .quicklog .qlout p:last-child { margin: 0; }
 .reclist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .reclist li { display: flex; align-items: center; gap: 10px; }
 .recname { flex: 1; min-width: 0; display: grid; gap: 2px; text-align: left; background: var(--surface-2); border: 0; border-radius: 14px; padding: 10px 12px; color: var(--ink); font: inherit; cursor: pointer; }
@@ -2257,10 +2260,66 @@ function allDone() {
   const timer = setTimeout(close, 7000);
 }
 const burst = () => h("span", { class: "burst", "aria-hidden": "true" }, Array.from({ length: 12 }, (_, j) => h("i", { style: `--a:${j * 30}deg;--d:${(j % 3) * 0.04 + 0.12}s;--c:${CHEER[j % CHEER.length]}` })));
-// "Log your meals" goes to the coach, ready to type; hand entry stays under Daily Log.
+// "Log your meals" opens a small sheet that asks the coach to log it, without leaving the page.
+// The exchange lands in the Coach chat too. Hand entry stays under Daily Log.
 function logWithCoach() {
-  setTab("coach");
-  coachEls?.ta.focus({ preventScroll: true }); // inside the tap, so phones open the keyboard
+  if (!S.sample) { setViewSec("today", "log"); toast("Claude isn't available right now, so add it by hand."); return; }
+  const dlg = sheet("Log food");
+  dlg.classList.add("quicklog");
+  const meal = h("select", { "aria-label": "Meal or snack" }, MEALS.map((m) => h("option", { value: m }, m)));
+  meal.value = defaultMeal();
+  const ta = h("textarea", { rows: "3", maxlength: "2000", placeholder: "e.g. turkey sandwich on wheat, an apple and a diet Coke" });
+  let photo = null;
+  const imgs = S.sampleLimits?.images;
+  const file = h("input", { type: "file", accept: imgs ? imgs.mediaTypes.join(",") : "image/*", capture: "environment", hidden: true });
+  const shot = h("div", { class: "attached", hidden: true });
+  const camBtn = imgs ? h("button", { class: "btn", type: "button", onclick: () => file.click() }, "Add a photo") : null;
+  file.addEventListener("change", () => {
+    const f = file.files?.[0]; file.value = "";
+    if (!f) return;
+    if (f.size > imgs.maxInputBytes) { toast("That photo is too large."); return; }
+    photo = f;
+    const url = URL.createObjectURL(f);
+    shot.replaceChildren(h("img", { src: url, alt: "Attached photo" }), h("span", { class: "muted" }, "Photo attached"),
+      h("button", { class: "btn", type: "button", onclick: () => { photo = null; shot.hidden = true; URL.revokeObjectURL(url); } }, "Remove"));
+    shot.hidden = false;
+  });
+  const chips = h("div", { class: "chips", hidden: true });
+  const out = h("div", { class: "qlout", hidden: true });
+  const go = h("button", { class: "btn btn-primary", type: "submit" }, "Log it");
+  const more = h("button", { class: "btn", type: "button", hidden: true, onclick: () => {
+    out.hidden = true; chips.hidden = true; chips.replaceChildren(); more.hidden = true; go.hidden = false; form.hidden = false;
+    ta.value = ""; photo = null; shot.hidden = true; meal.value = defaultMeal(); ta.focus();
+  } }, "Log something else");
+  const done = h("button", { class: "btn btn-primary", type: "button", hidden: true, onclick: () => dlg.close() }, "Done");
+  const form = h("div", { class: "stack", style: "gap:12px" },
+    h("label", { class: "field" }, "Meal or snack", meal),
+    h("label", { class: "field" }, "What did you have?", ta),
+    camBtn ? h("div", { class: "row", style: "align-items:center" }, camBtn, file) : null, shot);
+  const submit = async (e) => {
+    e?.preventDefault();
+    const what = ta.value.trim();
+    if (!what && !photo) { toast("Tell Claude what you had."); ta.focus(); return; }
+    if (S.busy) { toast("The coach is still answering. Try again in a moment."); return; }
+    go.disabled = true; meal.disabled = true; ta.disabled = true;
+    out.hidden = false; out.replaceChildren(h("p", { class: "typing" }, "Logging…"));
+    const res = await sendMessage({
+      text: `Log this for ${meal.value.toLowerCase()}: ${what || "what's in the photo"}`, photo,
+      chip: (label) => { chips.hidden = false; chips.append(h("span", {}, "✓ " + label)); },
+      onText: (t) => out.replaceChildren(formatted(t)),
+    });
+    go.disabled = false; meal.disabled = false; ta.disabled = false;
+    if (!res) { out.hidden = true; return; }
+    out.replaceChildren(formatted(res.text || "Done."));
+    form.hidden = true; go.hidden = true; more.hidden = false; done.hidden = false;
+  };
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(hover: hover)").matches) submit(e); });
+  put(dlg, h("form", { class: "stack", style: "gap:12px", onsubmit: submit },
+    h("div", { class: "sheet-head" }, h("h2", { class: "serif" }, "Log food"), closeX(dlg)),
+    h("p", { class: "small muted", style: "margin:0" }, "Tell Claude what you ate and it'll log it for you."),
+    form, chips, out,
+    h("div", { class: "row", style: "justify-content:flex-end;align-items:center" }, more, go, done)));
+  ta.focus(); // inside the tap, so phones open the keyboard
 }
 function taskRow({ ic, title, sub, done, meter, onclick, thumb, pop }) {
   return h("li", {}, h("button", { type: "button", class: `task${done ? " done" : ""}${pop != null ? " pop" : ""}`, style: pop != null ? `--el:${pop}ms` : null, onclick, disabled: !onclick },
@@ -3687,16 +3746,18 @@ function errorCopy(code) {
     default: return "Something went wrong. Your message is saved; try again.";
   }
 }
-async function sendMessage() {
+// `over` sends from somewhere other than the composer (the quick-log sheet): {text, photo, chip(label), onText(text)}.
+// The exchange is still saved to the chat; the composer and any check-in are left alone.
+async function sendMessage(over) {
   const E = coachEls;
-  const text = E.ta.value.trim();
-  const photo = S.photo;
-  if ((!text && !photo) || S.busy || !S.sample) return;
-  if (todayStr() !== S.today) { choose(S.pid); toast("It's a new day. Send again."); return; }
+  const text = over ? String(over.text || "").trim() : E.ta.value.trim();
+  const photo = over ? over.photo || null : S.photo;
+  if ((!text && !photo) || S.busy || !S.sample) return null;
+  if (todayStr() !== S.today) { choose(S.pid); toast("It's a new day. Send again."); return null; }
   S.busy = true;
   E.send.disabled = true; E.cam.disabled = true; E.stop.hidden = false;
   const date = S.today;
-  const checkin = S.checkin;
+  const checkin = over ? null : S.checkin;
   const history = S.chat.messages.filter((m) => m.text && !m.error).slice(-12);
   const userMsg = { role: "user", text, at: Date.now(), ...(photo ? { photo: true } : {}) };
 
@@ -3705,10 +3766,12 @@ async function sendMessage() {
   const body = h("div", {}, h("p", { class: "typing" }, "Thinking…"));
   const chipBox = h("div", { class: "chips", hidden: true });
   S.pending = { el: chatRow("bot", h("div", { class: "msg bot" }, chipBox, body)) };
-  const chip = (label) => { chips.push(label); chipBox.hidden = false; chipBox.append(h("span", {}, "✓ " + label)); };
+  const chip = (label) => { chips.push(label); chipBox.hidden = false; chipBox.append(h("span", {}, "✓ " + label)); over?.chip?.(label); };
 
-  E.ta.value = ""; E.ta.style.height = ""; E.ta.style.overflowY = "";
-  S.photo = null; E.attached.hidden = true;
+  if (!over) {
+    E.ta.value = ""; E.ta.style.height = ""; E.ta.style.overflowY = "";
+    S.photo = null; E.attached.hidden = true;
+  }
   try {
     await mutateChat(date, (c) => {
       if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", slot: checkin.slot, text: checkin.text, at: Date.now() - 1 }); }
@@ -3729,7 +3792,7 @@ async function sendMessage() {
     const res = await S.sample(turns, {
       tools: coachTools(chip), signal: S.ctl.signal, modelTier: S.prof.coachTier === "default" ? "default" : "quick",
       ...(photo ? { images: [photo] } : {}),
-      onText: ({ text: t }) => { reply = t; body.replaceChildren(formatted(t)); scrollChat(); },
+      onText: ({ text: t }) => { reply = t; body.replaceChildren(formatted(t)); scrollChat(); over?.onText?.(t); },
     });
     reply = res.text;
     if (res.truncated) reply += "\n\n(Cut short. Ask for less at a time.)";
@@ -3748,7 +3811,8 @@ async function sendMessage() {
   E.send.disabled = false; E.cam.disabled = false; E.stop.hidden = true;
   renderChat();
   renderAll();
-  focusSoftly(E.ta);
+  if (!over) focusSoftly(E.ta);
+  return { text: finalText, chips, error };
 }
 
 boot();
