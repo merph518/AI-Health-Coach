@@ -59,6 +59,10 @@ in `artifact/photos/`); publish them with the Artifact `files` parameter.
 - `feedback/{date}-{pid}-{id}`: {pid, name, kind bug|idea|other, text, at, date, device, status new|filed|done,
   issue?, issueUrl?, photos? (count)}; up to 3 photos at `feedback/{id}/photos/{0..2}` as {pid, url (JPEG data URL,
   longest side 1280px), at}, written before the entry. See FILE_FEEDBACK.md for filing them as GitHub issues.
+- `accounts/{claude user id}`: {pid, owner, first, at, seen {pid: last date}}. Written when someone opens a person.
+  Only the artifact owner (Michael) gets the person switcher; any other account is tied to the person it first
+  picks (never Michael) and opens straight to them. To re-link an account, delete its doc. This is an app-level
+  lock, not a db access rule.
 - `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, error?}],
   checkins [slot times already shown]
 

@@ -51,6 +51,7 @@ h2 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
 header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 3px solid var(--accent); margin: 0 -16px; padding-left: 16px !important; padding-right: 16px !important; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 10px; }
 .brand { color: var(--accent); font-weight: 700; font-size: 17px; letter-spacing: -.01em; }
 .who { display: inline-flex; align-items: center; gap: 6px; }
+.who:disabled { opacity: 1; cursor: default; }
 .tabs { position: sticky; top: var(--hdr-h, 64px); z-index: 19; background: var(--bg); margin-top: 0; display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px 16px; padding: 0 16px; border-bottom: 1px solid var(--border); }
 .tabs::-webkit-scrollbar { display: none; }
 .tab { border: 0; background: none; padding: 10px 10px 12px; cursor: pointer; color: var(--ink-2); border-bottom: 2px solid transparent; white-space: nowrap; }
@@ -457,9 +458,9 @@ html { scrollbar-gutter: stable; scroll-padding-top: calc(var(--hdr-h, 64px) + 4
   <div id="status" class="notice" hidden></div>
   <section id="picker" class="picker" hidden>
     <img class="photo hero-photo" src="photos/table.webp" alt="" decoding="async">
-    <h1>Who's logging?</h1>
+    <h1 id="pickerTitle">Who's logging?</h1>
     <div id="pickerList" class="stack" style="gap:10px"></div>
-    <p class="small muted">Your choice is remembered on this device. Switch any time from the top right.</p>
+    <p class="small muted" id="pickerNote">Your choice is remembered on this device. Switch any time from the top right.</p>
   </section>
   <div id="main" hidden>
     <nav class="tabs" role="tablist" aria-label="Views" id="tabs"></nav>
@@ -756,6 +757,11 @@ async function boot() {
     return;
   }
   S.canWrite = user ? await user.can("data.write").catch(() => null) : null;
+  // Which Claude account this is. Only the owner (Michael) can switch people; anyone else is tied to the
+  // person their account first picked (accounts/{id}), and only Michael can undo that.
+  S.uid = user ? await Promise.resolve().then(() => user.id()).catch(() => null) : null;
+  S.owner = user ? await Promise.resolve().then(() => user.isOwner()).catch(() => false) === true : false;
+  if (S.uid) S.account = await db.doc("accounts/" + S.uid).get().then((d) => (d.exists ? d.data() : null), () => null);
   if (sample) S.sampleLimits = await sample.limits().catch(() => null);
   // Gmail is only used for Michael's Apple Health import; nothing calls it until he asks.
   claude.use("mcp").then((m) => { S.mcp = !!m; }, () => {});
@@ -764,8 +770,8 @@ async function boot() {
     S.people = {};
     for (const d of snap.docs) S.people[d.id] = d.data();
     status.hidden = true;
-    const saved = store.get("sp.person");
-    if (!S.pid && saved && S.people[saved]) choose(saved);
+    const saved = S.owner ? store.get("sp.person") : boundPid() || (S.uid ? null : store.get("sp.person"));
+    if (!S.pid && saved && S.people[saved] && mayUse(saved)) choose(saved);
     else if (!S.pid) showPicker();
     else { S.prof = S.people[S.pid] || S.prof; S.today = todayStr(); renderAll(); }
     if (S.canWrite === false) {
@@ -782,6 +788,26 @@ async function boot() {
 function setPersonColor(pid) {
   document.documentElement.className = pid ? `p-${pid}` : "";
 }
+// The person this account is tied to (never Michael for a non-owner).
+function boundPid() {
+  const pid = S.account?.pid;
+  return !S.owner && pid && pid !== "michael" && S.people[pid] ? pid : null;
+}
+function mayUse(pid) {
+  if (S.owner) return true;
+  if (pid === "michael") return false;
+  const b = boundPid();
+  return !b || b === pid;
+}
+// Notes which account opened which person, once a day per person. A non-owner's first pick ties them to it.
+async function recordAccount(pid) {
+  if (!S.uid || !S.db) return;
+  const a = S.account || {};
+  if (a.pid === pid && a.seen?.[pid] === S.today && a.owner === S.owner) return;
+  if (!S.owner && boundPid() && boundPid() !== pid) return;
+  const next = { pid, owner: S.owner, first: a.first || Date.now(), at: Date.now(), seen: { ...(a.seen || {}), [pid]: S.today } };
+  try { await S.db.doc("accounts/" + S.uid).set(next); S.account = next; } catch {}
+}
 function showPicker() {
   setPersonColor(null);
   { const l = savedLook(); applyLook({ theme: l.theme, photos: l.photos }); } // no one's custom colors on the shared picker
@@ -790,14 +816,19 @@ function showPicker() {
   const list = $("pickerList");
   list.replaceChildren(
     ...Object.entries(S.people)
+      .filter(([id]) => mayUse(id))
       .sort((a, b) => (a[0] === "michael" ? -1 : b[0] === "michael" ? 1 : String(a[1].name).localeCompare(String(b[1].name))))
       .map(([id, p]) => h("button", { class: `btn p-${id}`, onclick: () => choose(id) }, personAvatar(id), String(p.name || id))),
   );
   if (!list.children.length) list.append(h("p", { class: "muted" }, "No people set up yet."));
+  $("pickerTitle").textContent = S.owner ? "Who's logging?" : "Who are you?";
+  $("pickerNote").textContent = S.owner ? "Your choice is remembered on this device. Switch any time from the top right."
+    : "Pick yourself. This links your Claude account to you, so it opens straight to your own log from now on. Only Michael can change it.";
   $("picker").hidden = false;
 }
 
 function choose(pid) {
+  if (!mayUse(pid)) return;
   for (const u of S.unsub) u();
   S.unsub = [];
   S.pid = pid;
@@ -815,8 +846,10 @@ function choose(pid) {
   $("main").hidden = false;
   const who = $("whoBtn");
   setWhoButton();
-  who.setAttribute("aria-label", `Logging as ${S.prof.name}. Switch person`);
+  who.setAttribute("aria-label", S.owner ? `Logging as ${S.prof.name}. Switch person` : `Logging as ${S.prof.name}`);
+  who.disabled = !S.owner;
   who.hidden = false;
+  recordAccount(pid);
 
   const err = () => { const s = $("status"); s.textContent = "Lost the connection to saved data. Reload the page."; s.hidden = false; };
   S.unsub.push(S.db.collection(P("days")).onSnapshot((snap) => {
@@ -849,6 +882,7 @@ function choose(pid) {
   renderAll();
 }
 $("whoBtn").addEventListener("click", () => {
+  if (!S.owner) return;
   if (S.busy) { toast("Wait for the coach to finish first."); return; }
   for (const u of S.unsub) u();
   S.unsub = [];
@@ -986,7 +1020,7 @@ function avatarSetting() {
 }
 function setWhoButton() {
   const who = $("whoBtn");
-  who.replaceChildren(personAvatar(S.pid, "sm"), String(S.prof.name || S.pid), h("span", { class: "faint", "aria-hidden": "true" }, " ▾"));
+  who.replaceChildren(personAvatar(S.pid, "sm"), String(S.prof.name || S.pid), ...(S.owner ? [h("span", { class: "faint", "aria-hidden": "true" }, " ▾")] : []));
 }
 function refreshAvatars() { if (!S.pid) return; setWhoButton(); renderChat(); }
 function chatRow(role, el) { return h("div", { class: `mrow ${role}` }, role === "user" ? personAvatar(S.pid) : coachAvatar(), el); }
