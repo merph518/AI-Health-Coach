@@ -37,6 +37,9 @@ Feedback tab or the coach's `send_feedback` tool.
   color? green|yellow|orange, note?}] (nutrition per unit), weight, water (count of that day's waterUnit, default glass),
   active, steps, partial
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
+  A food with `recipe: {id, servings, items: [{item, qty, kcal, p, c, f}], at}` is a saved recipe (Today → Daily Log →
+  My recipes, or the coach's `save_recipe` tool); its kcal/p/c/f are per serving, logging never overwrites them, and
+  recipes are never trimmed from the 600-food cap.
 - `people/{pid}/meta/program` (Noom-style only): track standard|custom, start {trackKey: date},
   done {lessonKey: {date, at, quiz, reflection}}, progress {lessonKey: {i, n, answers, reflection, at}}
   (where an unfinished lesson was closed; also kept per device in localStorage `sp.lp.<pid>.<lessonKey>`), goals {"trackKey:wN": {text, at}}, custom {id, name,
