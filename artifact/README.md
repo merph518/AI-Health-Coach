@@ -30,7 +30,8 @@ Feedback tab or the coach's `send_feedback` tool.
   active, steps, partial
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
 - `people/{pid}/meta/program` (Noom-style only): track standard|custom, start {trackKey: date},
-  done {lessonKey: {date, at, quiz, reflection}}, goals {"trackKey:wN": {text, at}}, custom {id, name,
+  done {lessonKey: {date, at, quiz, reflection}}, progress {lessonKey: {i, n, answers, reflection, at}}
+  (where an unfinished lesson was closed; also kept per device in localStorage `sp.lp.<pid>.<lessonKey>`), goals {"trackKey:wN": {text, at}}, custom {id, name,
   goals, weeks, plan: [{theme, focus, lessons?: [{title, key}]}]}. trackKey is `s` (the built-in
   16-week curriculum in the page) or `c-<id>`; lessonKey is `<trackKey>-<n>`. A custom program's
   outline is drafted by Claude from the person's goals, and each week's lessons when they reach it.

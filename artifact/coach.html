@@ -682,8 +682,10 @@ function setTab(id) {
   if (id === "settings") renderSettings();
   else if (S.prof) applyLook(lookOf(S.prof)); // drop any unsaved Appearance preview
   if (id === "feedback") renderFeedback();
-  if (id === "coach") requestAnimationFrame(() => scrollChat());
   renderAll();
+  // Every tab opens at its top, except the coach, which opens at the latest message.
+  if (id === "coach") requestAnimationFrame(() => scrollChat());
+  else window.scrollTo({ top: 0, behavior: "instant" });
 }
 function renderAll() {
   if (!S.pid) return;
@@ -1246,6 +1248,16 @@ Reply with only JSON: {"screens":[...]}`,
   } catch { return fallback; }
 }
 // ----- lesson player: one small screen at a time -----
+// Where someone stopped in an unfinished lesson: kept on this device at every screen and in the
+// program doc when the lesson is closed, so it picks up there next time (on any device).
+const progressStoreKey = (key) => `sp.lp.${S.pid}.${key}`;
+function lessonProgress(key) {
+  let local = null;
+  try { local = JSON.parse(store.get(progressStoreKey(key)) || "null"); } catch {}
+  const remote = S.program?.progress?.[key] || null;
+  const best = [local, remote].filter((x) => x && Number.isInteger(x.i) && x.i > 0).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+  return best || null;
+}
 async function openLesson(n) {
   const P0 = prog();
   const dlg = sheet("Lesson");
@@ -1267,10 +1279,28 @@ async function openLesson(n) {
   if (!dlg.isConnected) return;
   const key = lessonKey(P1.tk, n);
   const prev = P1.pr.done?.[key];
-  const answers = { ...(prev?.answers || {}) };
-  let reflection = prev?.reflection || "";
   const screens = [{ type: "intro" }, ...c.screens, { type: "end" }];
-  let i = 0, saved = false;
+  // Resume an unfinished lesson where it was left, if it's still the same lesson.
+  const resume = prev ? null : lessonProgress(key);
+  const resumable = resume && resume.n === screens.length && resume.i < screens.length - 1;
+  const answers = { ...((resumable ? resume.answers : prev?.answers) || {}) };
+  let reflection = (resumable ? resume.reflection : prev?.reflection) || "";
+  let i = resumable ? resume.i : 0, saved = false;
+  const progressNow = () => ({ i, n: screens.length, answers, reflection: reflection.slice(0, 1000), at: Date.now() });
+  const remember = () => { if (!saved && !prev && i > 0) store.set(progressStoreKey(key), JSON.stringify(progressNow())); };
+  dlg.addEventListener("close", () => {
+    if (saved || prev || i === 0) return;
+    remember();
+    renderAll();
+    if (S.canWrite === false) return;
+    const pg = progressNow();
+    mutateProgram((x) => {
+      if (x.done?.[key]) return false;
+      const old = x.progress?.[key];
+      if (old && old.i === pg.i && JSON.stringify(old.answers) === JSON.stringify(pg.answers) && old.reflection === pg.reflection) return false;
+      x.progress = { ...(x.progress || {}), [key]: pg };
+    }).catch(() => {});
+  });
   const answered = (k) => answers[k] != null;
   const needs = (s, k) => ["quiz", "truefalse", "poll", "reveal"].includes(s.type) && !answered(k);
   const save = async () => {
@@ -1278,7 +1308,11 @@ async function openLesson(n) {
     saved = true;
     const correct = c.screens.reduce((t, s, k) => t + ((s.type === "quiz" || s.type === "truefalse") && answers[k + 1] === s.answer ? 1 : 0), 0);
     try {
-      await mutateProgram((x) => { x.done = { ...(x.done || {}), [key]: { date: prev?.date || S.today, at: prev?.at || Date.now(), quiz: correct, answers, reflection: reflection.trim().slice(0, 1000) } }; });
+      await mutateProgram((x) => {
+        x.done = { ...(x.done || {}), [key]: { date: prev?.date || S.today, at: prev?.at || Date.now(), quiz: correct, answers, reflection: reflection.trim().slice(0, 1000) } };
+        if (x.progress?.[key]) { x.progress = { ...x.progress }; delete x.progress[key]; }
+      });
+      store.set(progressStoreKey(key), "");
       renderAll();
     } catch (err) { saved = false; toast(writeError(err)); }
   };
@@ -1306,11 +1340,11 @@ async function openLesson(n) {
         const v = answers[k] ?? 5;
         const out = h("div", { class: "scaleval num" }, String(v));
         const r = h("input", { type: "range", min: "1", max: "10", step: "1", value: String(v), "aria-label": s.question,
-          oninput: () => { answers[k] = Number(r.value); out.textContent = r.value; } });
+          oninput: () => { answers[k] = Number(r.value); out.textContent = r.value; remember(); } });
         return [art(s.art), h("p", { class: "say" }, s.question), out, r, h("div", { class: "scalelabs small muted" }, h("span", {}, s.low), h("span", {}, s.high))];
       }
       case "reflect": {
-        const ta = h("textarea", { rows: "4", maxlength: "1000", placeholder: "Type your answer (optional)", value: reflection, oninput: () => { reflection = ta.value; } });
+        const ta = h("textarea", { rows: "4", maxlength: "1000", placeholder: "Type your answer (optional)", value: reflection, oninput: () => { reflection = ta.value; remember(); } });
         return [art(s.art), h("p", { class: "say" }, s.question), ta, h("p", { class: "small muted center" }, "Your coach can see this and may bring it up.")];
       }
       case "end": {
@@ -1335,12 +1369,14 @@ async function openLesson(n) {
       h("button", { class: "btn btn-primary next", type: "button", disabled: needs(s, i),
         onclick: () => (last ? dlg.close() : go(1)) }, last ? "Done" : s.type === "intro" ? "Start" : screens[i + 1]?.type === "end" ? "Finish" : "Continue"));
     stage.scrollTop = 0;
+    remember();
   }
   dlg.addEventListener("keydown", (e) => { if (e.target.tagName === "TEXTAREA" || e.target.type === "range") return; if (e.key === "ArrowRight") go(1); if (e.key === "ArrowLeft") go(-1); });
   let x0 = null;
   stage.addEventListener("pointerdown", (e) => { if (e.pointerType === "touch") x0 = e.clientX; });
   stage.addEventListener("pointerup", (e) => { if (x0 == null) return; const dx = e.clientX - x0; x0 = null; if (Math.abs(dx) > 60 && e.target.type !== "range") go(dx < 0 ? 1 : -1); });
   draw();
+  if (resumable) toast("Picked up where you left off.");
 }
 
 function openLessonList() {
@@ -1529,7 +1565,7 @@ function programCard(d) {
     d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
   ];
   if (P0.finished) tasks.push({ ic: "book", title: "Program complete", sub: "Every lesson is done. Amazing!", done: true, onclick: openLessonList });
-  else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `Today's lesson · about 5 minutes${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
+  else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `${(() => { const r = lessonProgress(lessonKey(P0.tk, P0.next.n)); return r ? `Pick up where you left off · screen ${r.i + 1} of ${r.n}` : "Today's lesson · about 5 minutes"; })()}${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
   else tasks.push({ ic: "book", title: "Lesson done", sub: P0.doneToday.length ? P0.doneToday[0].title || "Today's lesson" : "All caught up. Next lesson tomorrow.", done: true, onclick: openLessonList });
   tasks.push({ ic: "drop", title: water >= WATER_GOAL ? "Water goal met" : "Drink water", sub: `${water} of ${WATER_GOAL} glasses`, done: water >= WATER_GOAL, meter: water / WATER_GOAL, onclick: openWater });
   if (S.prof.activity && d.steps != null) {
