@@ -3149,6 +3149,13 @@ function context(message) {
   const when = new Intl.DateTimeFormat("en-US", { timeZone: tz(), weekday: "long", hour: "numeric", minute: "2-digit" }).format(new Date());
   const L = [`PERSON: ${p.name}. Today is ${today} (${when}).`];
   if (isBirthday(p, today)) L.push(`TODAY IS ${p.name.toUpperCase()}'S BIRTHDAY (turning ${ageNow(p, today)}). Wish them a happy birthday in your first reply today if the chat hasn't yet, and be relaxed about birthday treats: one day doesn't undo progress.`);
+  // Leah and Eve get asked about the scale at most once a day (the morning check-in counts).
+  if (S.pid !== "michael" && d.weight == null) {
+    const asked = (S.checkin && /weigh|scale/i.test(S.checkin.text)) || S.chat.messages.some((m) => m.role === "assistant" && /weigh|scale/i.test(m.text || ""));
+    L.push(asked
+      ? "WEIGH-IN: no weight logged today, and they've already been asked about it today. Do not ask or remind them about weighing in again today. If they bring it up, log it gladly."
+      : "WEIGH-IN: no weight logged today. You may mention weighing in at most once today, lightly, and never again after that.");
+  }
   if (p.sex && p.heightIn) L.push(`Profile: ${p.sex}, ${p.heightIn} in${ageNow(p, today) ? `, age ${ageNow(p, today)}` : ""}${p.goalWeight ? `, goal ${p.goalWeight} lb` : ""}.${p.startWeight ? ` Started at ${p.startWeight} lb on ${p.startDate}.` : ""}`);
   if (p.bigPicture) L.push(`Their reason ("big picture"): ${p.bigPicture}`);
   if (d.base != null) {
