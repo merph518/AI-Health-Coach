@@ -1,11 +1,14 @@
 <title>Fagerteam Weight Loss Coach</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap">
 <style>
 :root {
   color-scheme: dark;
   --bg: #0a0a0a; --surface: #151515; --surface-2: #1f1f1f; --border: #2a2a2a;
   --ink: #ffffff; --ink-2: #c4c4c4; --ink-3: #8c8c8c;
   --good: #4cc274; --warn: #e0a040; --danger: #f07167;
-  --green: #4cc274; --yellow: #e5c04a; --red: #e5534b;
+  --green: #4cc274; --yellow: #e5c04a; --red: #e5534b; --orange: #f08a52;
   --tick: #ffffff; --radius: 14px; --shadow: none;
 }
 /* Each person's highlight color. The root gets the chosen person's class; picker buttons carry their own. */
@@ -70,7 +73,7 @@ header.top { position: sticky; top: 0; z-index: 20; background: var(--bg); borde
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
 .ctip { cursor: help; }
 .dot.ctip { position: relative; } .dot.ctip::after { content: ""; position: absolute; inset: -9px; }
-.dot.green { background: var(--green); } .dot.yellow { background: var(--yellow); } .dot.red { background: var(--red); }
+.dot.green { background: var(--green); } .dot.yellow { background: var(--yellow); } .dot.orange { background: var(--orange); }
 .colors { display: flex; height: 10px; border-radius: 99px; overflow: hidden; gap: 2px; margin: 8px 0 6px; background: var(--surface-2); }
 .colors > div { height: 100%; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
@@ -155,6 +158,139 @@ dialog.sheet > * + * { margin-top: 12px; }
 .notice { padding: 10px 12px; border-radius: 12px; background: var(--surface-2); font-size: 13px; color: var(--ink-2); }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--surface-2); color: var(--ink); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 14px; font-size: 14px; display: flex; gap: 12px; align-items: center; z-index: 10; max-width: calc(100% - 32px); }
 .toast button { background: none; border: 0; color: var(--accent); font-weight: 600; cursor: pointer; }
+/* ---------- Light theme: clean, airy, photo-led (the default for everyone; dark is a setting) ---------- */
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f3ee; --surface: #ffffff; --surface-2: #f2f0ea; --border: #e4e1d9;
+  --ink: #1d2a2a; --ink-2: #5a6665; --ink-3: #8b9594;
+  --good: #1f9d74; --warn: #c98a12; --danger: #d64a3f;
+  --green: #3fb27f; --yellow: #f2c230; --red: #ec5a4f; --orange: #f2853f;
+  --tick: #1d2a2a; --radius: 18px; --shadow: 0 1px 2px rgba(29,42,42,.05), 0 6px 20px rgba(29,42,42,.06);
+  --serif: "Fraunces", Georgia, "Times New Roman", serif;
+}
+html[data-theme="light"], html[data-theme="light"] .p-michael { --accent: #157a72; --accent-ink: #ffffff; --accent-soft: #dff1ee; --bar: #a9d8d2; --bar-today: #157a72; --line: #157a72; --link: #157a72; }
+html[data-theme="light"].p-eve, html[data-theme="light"] .p-eve { --accent: #7a4fd0; --accent-ink: #ffffff; --accent-soft: #eee6fb; --bar: #cdb8f2; --bar-today: #7a4fd0; --line: #7a4fd0; --link: #6a3fc0; }
+html[data-theme="light"].p-leah, html[data-theme="light"] .p-leah { --accent: #f0b429; --accent-ink: #1d2a2a; --accent-soft: #fdf1d3; --bar: #f6d98a; --bar-today: #e0a312; --line: #d99a0b; --link: #9a6a00; }
+html[data-theme="light"] body { font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+html[data-theme="light"] .card { border: 0; border-top: 0; box-shadow: var(--shadow); }
+html[data-theme="light"] header.top { background: var(--surface); border-bottom: 0; box-shadow: 0 1px 0 var(--border); }
+html[data-theme="light"] .brand { font-family: var(--serif); font-weight: 600; color: var(--ink); font-size: 19px; }
+html[data-theme="light"] .tabs { background: var(--surface); }
+html[data-theme="light"] .tab[aria-selected="true"] { color: var(--ink); }
+html[data-theme="light"] h2, html[data-theme="light"] .picker h1, html[data-theme="light"] dialog h2, html[data-theme="light"] .serif { font-family: var(--serif); font-weight: 600; letter-spacing: -.01em; }
+html[data-theme="light"] h2 { font-size: 18px; }
+html[data-theme="light"] .btn { border-radius: 999px; padding: 8px 16px; }
+html[data-theme="light"] .btn.who { background: var(--surface-2); border-color: transparent; }
+html[data-theme="light"] .btn-primary { font-weight: 600; }
+html[data-theme="light"] .btn-danger { color: #fff; }
+html[data-theme="light"] .field input, html[data-theme="light"] .field select, html[data-theme="light"] .field textarea, html[data-theme="light"] .composer textarea { background-color: var(--surface); border-color: var(--border); border-radius: 12px; }
+html[data-theme="light"] .linkish, html[data-theme="light"] .toast button { color: var(--link); }
+html[data-theme="light"] .msg.bot { border: 0; box-shadow: var(--shadow); }
+html[data-theme="light"] .msg .tag { color: var(--link); }
+html[data-theme="light"] .daybar { border: 0; box-shadow: var(--shadow); }
+html[data-theme="light"] .tick.on { color: #fff; }
+html[data-theme="light"] .toast { background: #1d2a2a; color: #fff; border-color: #1d2a2a; }
+html[data-theme="light"] .toast button { color: #8fe0d5; }
+html[data-theme="light"] dialog.sheet, html[data-theme="light"] dialog.confirm { border: 0; border-radius: 22px; box-shadow: 0 24px 60px rgba(29,42,42,.25); }
+html[data-theme="light"] dialog.sheet::backdrop, html[data-theme="light"] dialog.confirm::backdrop { background: rgba(29,42,42,.45); }
+html[data-theme="light"] .picker .btn { border-radius: 18px; border: 0; border-left: 6px solid var(--accent); box-shadow: var(--shadow); background: var(--surface); }
+html[data-theme="light"] .subtab { background: var(--surface); }
+html[data-theme="light"] .choice { background: var(--surface); }
+html[data-theme="light"] .lcard { background: var(--surface-2); }
+
+/* ---------- Photos (Unsplash license; off with the Photos setting) ---------- */
+html[data-photos="off"] .photo { display: none !important; }
+.photo { display: block; width: 100%; object-fit: cover; background: var(--surface-2); }
+.banner { position: relative; border-radius: var(--radius); overflow: hidden; margin: -16px -16px 14px; }
+.banner .photo { aspect-ratio: 16 / 7; }
+.banner .over { position: absolute; inset: auto 0 0 0; padding: 40px 16px 12px; background: linear-gradient(transparent, rgba(0,0,0,.62)); color: #fff; }
+.banner .over .serif, .banner .over h2 { color: #fff; margin: 0; font-size: 22px; }
+.banner .over small { opacity: .9; font-size: 13px; }
+html[data-photos="off"] .banner { display: none; }
+.sheet-photo { margin: -16px -18px 4px; width: calc(100% + 36px); max-width: none; aspect-ratio: 16 / 8; border-radius: 22px 22px 0 0; }
+.picker .hero-photo { border-radius: var(--radius); aspect-ratio: 16 / 8; box-shadow: var(--shadow); }
+.thumb { width: 52px; height: 52px; border-radius: 12px; flex: none; }
+
+/* ---------- Daily checklist ---------- */
+.weekstrip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 2px 0 14px; text-align: center; }
+.weekstrip .d { display: grid; justify-items: center; gap: 4px; font-size: 11px; color: var(--ink-3); }
+.weekstrip .ring { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--accent) calc(var(--pct) * 1%), var(--surface-2) 0); }
+.weekstrip .ring::before { content: ""; width: 26px; height: 26px; border-radius: 50%; background: var(--surface); grid-area: 1 / 1; }
+.weekstrip .ring.full { background: var(--accent); }
+.weekstrip .ring.full::before { content: "✓"; background: none; color: var(--accent-ink); font-weight: 700; font-size: 14px; display: grid; place-items: center; }
+.weekstrip .today { color: var(--ink); font-weight: 700; }
+.weekstrip .future .ring { background: var(--surface-2); }
+.tlist { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.task { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--surface-2); border: 0; width: 100%; text-align: left; color: var(--ink); cursor: pointer; font: inherit; }
+html[data-theme="light"] .task { background: var(--surface); box-shadow: inset 0 0 0 1px var(--border); }
+.task:disabled { cursor: default; }
+.task .ic { flex: none; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+html[data-theme="light"] .p-leah .task .ic, html[data-theme="light"].p-leah .task .ic { color: #9a6a00; }
+.task.done .ic { background: var(--good); color: #fff; }
+.task .ic svg { width: 20px; height: 20px; }
+.task .tx { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.task .tx strong { font-weight: 600; font-size: 15px; }
+.task .tx span { font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+.task .go { flex: none; color: var(--ink-3); font-size: 18px; }
+.task .meter { height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
+html[data-theme="light"] .task .meter { background: var(--bg); }
+.task .meter > div { height: 100%; background: var(--accent); border-radius: 99px; }
+.pfoot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+
+/* ---------- Water ---------- */
+.glasses { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; justify-items: center; margin: 18px 0; }
+.glass { width: 54px; height: 66px; border: 0; background: none; cursor: pointer; padding: 0; color: #4aa8e8; }
+.glass svg { width: 100%; height: 100%; }
+.glass .fill { fill: currentColor; opacity: 0; transition: opacity .15s; }
+.glass.on .fill { opacity: 1; }
+.glass .cup { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linejoin: round; }
+.center { text-align: center; }
+.program .nophoto { margin-bottom: 10px; } html[data-photos="on"] .program .nophoto { display: none; }
+
+/* ---------- Lesson player ---------- */
+dialog.sheet.player { width: min(480px, 100vw); height: min(760px, 100dvh); max-height: 100dvh; display: flex; flex-direction: column; padding: 14px 18px 18px; overflow: hidden; }
+dialog.sheet.player > * + * { margin-top: 0; }
+@media (max-width: 520px) { dialog.sheet.player { width: 100vw; height: 100dvh; border-radius: 0 !important; margin: 0; } }
+.ptop { display: flex; align-items: center; gap: 12px; }
+.segs { flex: 1; display: flex; gap: 4px; }
+.segs i { flex: 1; height: 5px; border-radius: 99px; background: var(--surface-2); }
+.segs i.on { background: var(--accent); }
+.stage { flex: 1; overflow-y: auto; display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 12px 2px; position: relative; }
+.stage.in > * { animation: rise .32s ease both; }
+.stage.in > *:nth-child(2) { animation-delay: .05s; } .stage.in > *:nth-child(3) { animation-delay: .1s; } .stage.in > *:nth-child(4) { animation-delay: .15s; }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.stage .sheet-photo { margin: 0 0 4px; width: 100%; border-radius: 18px; aspect-ratio: 16 / 10; }
+html[data-photos="on"] .nophoto-art { display: none; }
+.art { align-self: center; width: 132px; height: 132px; border-radius: 42% 58% 55% 45% / 50% 45% 55% 50%; background: var(--accent-soft); display: grid; place-items: center; }
+.art span { font-size: 66px; line-height: 1; animation: pop .45s cubic-bezier(.3,1.6,.5,1) both; }
+.art.pulse span { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pop { from { transform: scale(.4); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes pulse { 50% { transform: scale(1.12); } }
+.kicker { text-align: center; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--link, var(--accent)); }
+h2.big { font-size: 26px; text-align: center; margin: 0; line-height: 1.2; }
+.say { font-size: 19px; line-height: 1.45; text-align: center; }
+.opts { display: grid; gap: 10px; }
+.opts.two { grid-template-columns: 1fr 1fr; }
+.opt { border: 2px solid var(--border); background: var(--surface); color: var(--ink); border-radius: 16px; padding: 13px 14px; font-size: 16px; cursor: pointer; text-align: left; }
+.opts.two .opt { text-align: center; font-weight: 600; }
+.opt:disabled { cursor: default; opacity: .75; }
+.opt.right { border-color: var(--good); background: color-mix(in srgb, var(--good) 14%, var(--surface)); opacity: 1; }
+.opt.wrong { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); opacity: 1; }
+.opt.picked { border-color: var(--accent); background: var(--accent-soft); opacity: 1; }
+.why { font-size: 15px; line-height: 1.45; background: var(--surface-2); border-radius: 14px; padding: 10px 12px; }
+.revealbtn { align-self: center; }
+.revealed { font-size: 17px; line-height: 1.45; text-align: center; background: var(--accent-soft); border-radius: 16px; padding: 14px; animation: pop .35s ease both; }
+.scaleval { text-align: center; font-size: 40px; font-weight: 700; color: var(--accent); }
+.stage input[type=range] { width: 100%; accent-color: var(--accent); height: 28px; }
+.scalelabs { display: flex; justify-content: space-between; }
+.stage textarea { font-size: 16px; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; background: var(--surface); color: var(--ink); resize: vertical; }
+.pnav { display: flex; justify-content: space-between; gap: 10px; padding-top: 10px; }
+.pnav .next { flex: 1; max-width: 240px; margin-left: auto; min-height: 48px; font-size: 16px; }
+.confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.confetti i { position: absolute; top: -12px; left: var(--x); width: 9px; height: 14px; border-radius: 3px; background: var(--c); animation: fall 1.8s ease-in var(--d) both; }
+@keyframes fall { to { transform: translateY(720px) rotate(540deg); opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .stage.in > *, .art span, .confetti i, .revealed { animation: none !important; } }
+
 html { scrollbar-gutter: stable; scroll-padding-top: calc(var(--hdr-h, 64px) + 48px); }
 [hidden] { display: none !important; }
 </style>
@@ -166,6 +302,7 @@ html { scrollbar-gutter: stable; scroll-padding-top: calc(var(--hdr-h, 64px) + 4
   </header>
   <div id="status" class="notice" hidden></div>
   <section id="picker" class="picker" hidden>
+    <img class="photo hero-photo" src="photos/table.webp" alt="" decoding="async">
     <h1>Who's logging?</h1>
     <div id="pickerList" class="stack" style="gap:10px"></div>
     <p class="small muted">Your choice is remembered on this device. Switch any time from the top right.</p>
@@ -327,7 +464,7 @@ function dayView(date) {
         id: String(i.id), meal: String(i.meal || "Snack"), item: String(i.item || ""), qty, n,
         kcal: Number(i.kcal) || 0, cal: Math.round(qty * (Number(i.kcal) || 0)),
         p: r1(qty * (Number(i.p) || 0)), c: r1(qty * (Number(i.c) || 0)), f: r1(qty * (Number(i.f) || 0)),
-        color: i.color === "orange" ? "red" : ["green", "yellow", "red"].includes(i.color) ? i.color : null, note: i.note ? String(i.note) : "",
+        color: i.color === "red" ? "orange" : ["green", "yellow", "orange"].includes(i.color) ? i.color : null, note: i.note ? String(i.note) : "",
       };
     })
     .sort((a, b) => mealRank(a.meal) - mealRank(b.meal) || a.n - b.n);
@@ -482,6 +619,7 @@ function choose(pid) {
   S.pending = null;
   store.set("sp.person", pid);
   setPersonColor(pid);
+  applyLook(lookOf(S.prof));
   $("picker").hidden = true;
   $("main").hidden = false;
   const who = $("whoBtn");
@@ -496,7 +634,7 @@ function choose(pid) {
     renderAll();
   }, err));
   S.unsub.push(S.db.doc(P("meta", "library")).onSnapshot((snap) => {
-    S.library = (snap.exists && Array.isArray(snap.data().foods) ? snap.data().foods : []).map((f) => f && f.color === "orange" ? { ...f, color: "red" } : f);
+    S.library = (snap.exists && Array.isArray(snap.data().foods) ? snap.data().foods : []).map((f) => f && f.color === "red" ? { ...f, color: "orange" } : f);
     renderLibraryList();
   }, err));
   S.unsub.push(S.db.doc(P("meta", "program")).onSnapshot((snap) => {
@@ -539,6 +677,7 @@ function setTab(id) {
   $("tabs").children[TABS.findIndex((t) => t[0] === id)]?.scrollIntoView({ block: "nearest", inline: "nearest" });
   for (const [t] of TABS) $("v-" + t).hidden = t !== id;
   if (id === "settings") renderSettings();
+  else if (S.prof) applyLook(lookOf(S.prof)); // drop any unsaved Appearance preview
   if (id === "feedback") renderFeedback();
   if (id === "coach") requestAnimationFrame(() => scrollChat());
   renderAll();
@@ -596,7 +735,7 @@ async function removeWithUndo(id) {
 const COLOR_INFO = {
   green: { label: "Green", hint: "fill up", desc: "Low calorie density: lots of food for few calories. Fill up on these." },
   yellow: { label: "Yellow", hint: "moderate", desc: "Middle calorie density. Enjoy in moderate portions." },
-  red: { label: "Red", hint: "smaller portions", desc: "High calorie density: a lot of calories in a small amount. Still fine, just in smaller portions." },
+  orange: { label: "Orange", hint: "smaller portions", desc: "High calorie density: a lot of calories in a small amount. Still fine, just in smaller portions." },
 };
 const colorTip = (k) => `${COLOR_INFO[k].label} food. ${COLOR_INFO[k].desc}`;
 function colorDot(k) {
@@ -604,23 +743,23 @@ function colorDot(k) {
     onclick: (e) => { e.stopPropagation(); toast(colorTip(k)); } });
 }
 function colorMix(d) {
-  const sum = { green: 0, yellow: 0, red: 0 };
+  const sum = { green: 0, yellow: 0, orange: 0 };
   for (const i of d.items) if (i.color) sum[i.color] += i.cal;
-  const tot = sum.green + sum.yellow + sum.red;
+  const tot = sum.green + sum.yellow + sum.orange;
   if (!tot) return null;
   const pct = (k) => Math.round((sum[k] / tot) * 100);
   return h("div", {},
-    h("div", { class: "colors", role: "img", "aria-label": `Green ${pct("green")}%, yellow ${pct("yellow")}%, red ${pct("red")}% of calories` },
-      ["green", "yellow", "red"].filter((k) => sum[k]).map((k) => h("div", { style: `width:${(sum[k] / tot) * 100}%;background:var(--${k})` }))),
-    h("div", { class: "legend" }, ["green", "yellow", "red"].map((k) =>
+    h("div", { class: "colors", role: "img", "aria-label": `Green ${pct("green")}%, yellow ${pct("yellow")}%, orange ${pct("orange")}% of calories` },
+      ["green", "yellow", "orange"].filter((k) => sum[k]).map((k) => h("div", { style: `width:${(sum[k] / tot) * 100}%;background:var(--${k})` }))),
+    h("div", { class: "legend" }, ["green", "yellow", "orange"].map((k) =>
       h("span", { class: "ctip", title: colorTip(k), tabindex: "0", onclick: () => toast(colorTip(k)) }, h("span", { class: `dot ${k}` }), `${COLOR_INFO[k].label} ${pct(k)}% `, h("span", { class: "faint num" }, `(${fmt(sum[k])})`)))),
     h("p", { class: "small muted", style: "margin-top:6px" },
-      ["green", "yellow", "red"].map((k) => `${COLOR_INFO[k].label}: ${COLOR_INFO[k].hint}`).join(" · "), ". Based on calories per gram; no color is off-limits."));
+      ["green", "yellow", "orange"].map((k) => `${COLOR_INFO[k].label}: ${COLOR_INFO[k].hint}`).join(" · "), ". Based on calories per gram; no color is off-limits."));
 }
 
 // Foods logged before switching to Noom-style have no color. One click asks Claude to
 // color every uncolored food (by name, so repeats match) across the log and the library.
-const COLOR_RULE = "Color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, red above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, red above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, red above 0.5. Whole grains one step greener.";
+const COLOR_RULE = "Color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, orange above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, orange above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, orange above 0.5. Whole grains one step greener.";
 const foodKey = (s) => String(s || "").trim().toLowerCase();
 function uncoloredFoods() {
   const map = new Map();
@@ -635,9 +774,9 @@ async function colorFoods(btn) {
   btn.disabled = true;
   btn.textContent = "Coloring…";
   try {
-    const out = await S.sample.json(`You label foods for a Noom-style food log. ${COLOR_RULE} Use typical values when grams are missing.\n\nReply with only a JSON array of ${list.length} strings, each "green", "yellow" or "red", in the same order as these foods:\n${JSON.stringify(list)}`, { modelTier: "quick", cache: false });
+    const out = await S.sample.json(`You label foods for a Noom-style food log. ${COLOR_RULE} Use typical values when grams are missing.\n\nReply with only a JSON array of ${list.length} strings, each "green", "yellow" or "orange", in the same order as these foods:\n${JSON.stringify(list)}`, { modelTier: "quick", cache: false });
     if (!Array.isArray(out) || out.length !== list.length) throw { code: "invalid_json" };
-    const colors = new Map(list.map((f, n) => [foodKey(f.food), ["green", "yellow", "red"].includes(out[n]) ? out[n] : null]).filter((x) => x[1]));
+    const colors = new Map(list.map((f, n) => [foodKey(f.food), ["green", "yellow", "orange"].includes(out[n]) ? out[n] : null]).filter((x) => x[1]));
     let n = 0;
     for (const date of Object.keys(S.days)) {
       if (!(S.days[date].items || []).some((i) => !i.color && colors.has(foodKey(i.item)))) continue;
@@ -658,7 +797,7 @@ function colorFoodsButton() {
   if (!n) return null;
   const btn = h("button", { class: "btn", type: "button", style: "margin-top:10px" }, `Color-code my foods (${n})`);
   btn.onclick = () => colorFoods(btn);
-  return h("div", {}, btn, h("p", { class: "small muted", style: "margin-top:4px" }, "Noom-style shows each food as green, yellow or red. Foods logged before you switched don't have a color yet."));
+  return h("div", {}, btn, h("p", { class: "small muted", style: "margin-top:4px" }, "Noom-style shows each food as green, yellow or orange. Foods logged before you switched don't have a color yet."));
 }
 
 // ---------- Today ----------
@@ -803,8 +942,8 @@ const PROGRAM_WEEKS = [
     ["What calorie density means", "Calorie density is calories per gram of food. Low-density foods (vegetables, fruit, soups) fill you up for fewer calories. Volume helps you feel satisfied."],
     ["Green foods", "Green foods are the least calorie-dense: most vegetables, fruits, broth soups, nonfat dairy, whole grains. Filling up on them leaves room in your budget."],
     ["Yellow foods", "Yellow foods are in the middle: lean meats, fish, eggs, beans, starches like rice and bread. They're a big part of a balanced plate, in moderate portions."],
-    ["Red foods", "Red foods pack lots of calories into a small amount: nuts, oils, cheese, sweets, fried foods. No food is off-limits; red just means a smaller portion."],
-    ["Building a balanced plate", "Start with green (half the plate), add yellow protein and starch, and treat red as an accent. This keeps meals filling and satisfying."],
+    ["Orange foods", "Orange foods pack lots of calories into a small amount: nuts, oils, cheese, sweets, fried foods. No food is off-limits; orange just means a smaller portion."],
+    ["Building a balanced plate", "Start with green (half the plate), add yellow protein and starch, and treat orange as an accent. This keeps meals filling and satisfying."],
     ["Drinks count too", "Juice, soda, alcohol and fancy coffee drinks add calories without much fullness. Water, tea and black coffee are easy swaps; keep favorites, just log them."],
     ["Week two check-in", "Which green foods do you actually enjoy? Pick one or two to add this week and one small goal for the week."],
   ]],
@@ -987,15 +1126,6 @@ function ensureProgramStart() {
 }
 
 // ----- lesson cards -----
-function validLesson(o) {
-  if (!o || !Array.isArray(o.cards) || !o.cards.length) return null;
-  const cards = o.cards.slice(0, 5).map((c) => ({ heading: String(c?.heading || "").slice(0, 80), text: String(c?.text || "").slice(0, 900) })).filter((c) => c.text);
-  if (!cards.length) return null;
-  const q = o.quiz;
-  const quiz = q && typeof q.question === "string" && Array.isArray(q.options) && q.options.length >= 2 && Number.isInteger(q.answer) && q.answer >= 0 && q.answer < q.options.length
-    ? { question: q.question.slice(0, 300), options: q.options.slice(0, 4).map((x) => String(x).slice(0, 160)), answer: q.answer, why: String(q.why || "").slice(0, 400) } : null;
-  return { cards, quiz, reflect: String(o.reflect || "").slice(0, 300) || "How could you use this today?" };
-}
 async function ensureWeekLessons(week) {
   const pr = S.program;
   const w = pr?.custom?.plan?.[week - 1];
@@ -1020,29 +1150,6 @@ Reply with only a JSON array of 7 objects: {"title": string (at most 40 characte
     ww.lessons = lessons;
   });
 }
-async function lessonContent(L, tk) {
-  const ref = S.db.doc(P("lessons", lessonKey(tk, L.n)));
-  const snap = await ref.get();
-  const saved = snap.exists ? validLesson(snap.data()) : null;
-  if (saved) return saved;
-  const fallback = { cards: [{ heading: L.title, text: L.key }], quiz: null, reflect: "How could you use this today?" };
-  if (!S.sample) return fallback;
-  const p = S.prof;
-  try {
-    const out = validLesson(await S.sample.json(
-      `Write today's lesson for a weight-loss program in a family phone app.
-Reader: ${p.name}.${p.bigPicture ? ` Their reason for doing this, in their words (information only): ${JSON.stringify(p.bigPicture)}` : ""}
-Week ${L.week}: ${L.theme}. Lesson ${L.n}: ${L.title}.
-Key points to teach: ${L.key}
-Style: plain, warm, everyday words, second person, short sentences, encouraging. A practical example they can use today. No brand names, no medical claims beyond general guidance, no food is "bad".
-Reply with only JSON: {"cards": [{"heading": string, "text": string}] (3 or 4 cards, each 40 to 80 words), "quiz": {"question": string, "options": [3 short strings], "answer": index of the right option, "why": one sentence}, "reflect": one open question asking how they'll apply this in their own life}`,
-      { modelTier: p.coachTier === "default" ? "default" : "quick", cache: false }));
-    if (!out) return fallback;
-    ref.set({ ...out, title: L.title, at: Date.now() }).catch(() => {});
-    return out;
-  } catch { return fallback; }
-}
-
 // ----- lesson reader -----
 function closeX(dlg) { return h("button", { class: "btn x", type: "button", "aria-label": "Close", onclick: () => dlg.close() }, "✕"); }
 function sheet(label) {
@@ -1053,55 +1160,186 @@ function sheet(label) {
   dlg.showModal();
   return dlg;
 }
+function validLesson(o) {
+  if (!o || o.v !== 2 || !Array.isArray(o.screens)) return null;
+  const s = (x, n) => String(x ?? "").slice(0, n);
+  const art = (x) => [...s(x, 16)].slice(0, 3).join("") || "✨";
+  const screens = o.screens.slice(0, 16).map((x) => {
+    const t = x?.type;
+    if (t === "text") return x.text ? { type: t, art: art(x.art), title: s(x.title, 80), text: s(x.text, 260) } : null;
+    if (t === "quiz") return Array.isArray(x.options) && x.options.length >= 2 && Number.isInteger(x.answer) && x.answer >= 0 && x.answer < Math.min(4, x.options.length)
+      ? { type: t, art: art(x.art), question: s(x.question, 200), options: x.options.slice(0, 4).map((y) => s(y, 120)), answer: x.answer, why: s(x.why, 240) } : null;
+    if (t === "truefalse") return typeof x.answer === "boolean" ? { type: t, art: art(x.art), statement: s(x.statement, 200), answer: x.answer, why: s(x.why, 240) } : null;
+    if (t === "poll") return Array.isArray(x.options) && x.options.length >= 2 ? { type: t, art: art(x.art), question: s(x.question, 200), options: x.options.slice(0, 5).map((y) => s(y, 100)), reply: s(x.reply, 220) } : null;
+    if (t === "reveal") return x.text && x.reveal ? { type: t, art: art(x.art), text: s(x.text, 200), reveal: s(x.reveal, 240) } : null;
+    if (t === "scale") return x.question ? { type: t, art: art(x.art), question: s(x.question, 200), low: s(x.low || "Not at all", 40), high: s(x.high || "Very", 40) } : null;
+    if (t === "reflect") return x.question ? { type: t, art: art(x.art), question: s(x.question, 220) } : null;
+    return null;
+  }).filter(Boolean);
+  return screens.filter((x) => x.type === "text").length >= 2 ? { v: 2, screens } : null;
+}
+// One build per lesson at a time, shared by the background prep and the player.
+const lessonJobs = new Map();
+function lessonContent(L, tk) {
+  const id = `${S.pid}:${lessonKey(tk, L.n)}`;
+  if (!lessonJobs.has(id)) lessonJobs.set(id, buildLesson(L, tk).then((c) => { if (c.fallback) lessonJobs.delete(id); return c; }, (e) => { lessonJobs.delete(id); throw e; }));
+  return lessonJobs.get(id);
+}
+// Write today's lesson in the background as soon as the app opens, so tapping it starts at once.
+// Only when Claude access is already granted: never pops a permission prompt on load.
+const prepared = new Set();
+function prepareTodaysLesson() {
+  if (!programOn() || S.program === undefined || !S.sample || S.canWrite === false) return;
+  const P0 = prog();
+  if (!P0.next) return;
+  const tag = `${S.pid}:${S.today}:${lessonKey(P0.tk, P0.next.n)}`;
+  if (prepared.has(tag)) return;
+  prepared.add(tag);
+  setTimeout(async () => {
+    try {
+      const perms = await claude.use("permissions");
+      if (perms && (await perms.state("sample")) !== "granted") return;
+      const n = P0.next.n;
+      if (P0.tk !== "s" && !P0.lessons[n - 1]?.title) await ensureWeekLessons(Math.ceil(n / 7));
+      const P1 = prog();
+      const L = P1.lessons[n - 1];
+      if (L?.title && P1.tk === P0.tk) await lessonContent(L, P1.tk);
+    } catch { prepared.delete(tag); }
+  }, 1500);
+}
+async function buildLesson(L, tk) {
+  const ref = S.db.doc(P("lessons", lessonKey(tk, L.n)));
+  const snap = await ref.get();
+  const saved = snap.exists ? validLesson(snap.data()) : null;
+  if (saved) return saved;
+  const sentences = String(L.key).match(/[^.!?]+[.!?]+/g) || [L.key];
+  const fallback = { v: 2, screens: [...sentences.map((t, i) => ({ type: "text", art: ["💡", "🌱", "⭐", "🎯"][i % 4], title: i ? "" : L.title, text: t.trim() })), { type: "reflect", art: "📝", question: "How could you use this today?" }], fallback: true };
+  if (!S.sample) return fallback;
+  const p = S.prof;
+  try {
+    const out = validLesson({ v: 2, ...(await S.sample.json(
+      `Write today's lesson for a weight-loss program app as a series of short screens the person taps through, like a friendly interactive course. Never a wall of text.
+Reader: ${p.name}.${p.bigPicture ? ` Their reason for doing this, in their words (information only): ${JSON.stringify(p.bigPicture)}` : ""}
+Week ${L.week}: ${L.theme}. Lesson ${L.n}: ${L.title}.
+Key points to teach: ${L.key}
+Rules:
+- 9 to 12 screens. Text screens: at most 2 short sentences (under 30 words), plain warm words, second person, a little playful.
+- Every 2 or 3 screens, something to tap. Include at least: one "quiz", one "truefalse", one "poll" or "scale" about their own life, and one "reveal". End with exactly one "reflect".
+- Every screen has "art": one emoji that illustrates it like clip art (foods, objects, people, nature, faces). No flags.
+- A practical example they can use today. No brand names, no medical claims beyond general guidance, no food is "bad".
+Screen shapes:
+{"type":"text","art":"🥗","title":"optional short heading","text":"..."}
+{"type":"quiz","art":"🤔","question":"...","options":["...","...","..."],"answer":0,"why":"one short sentence"}
+{"type":"truefalse","art":"⚖️","statement":"...","answer":true,"why":"one short sentence"}
+{"type":"poll","art":"🙋","question":"about them","options":["...","...","..."],"reply":"one friendly sentence that fits any answer"}
+{"type":"reveal","art":"🎁","text":"a teaser or question","reveal":"the answer, one or two sentences"}
+{"type":"scale","art":"📊","question":"How ... are you?","low":"label for 1","high":"label for 10"}
+{"type":"reflect","art":"📝","question":"one open question about applying it"}
+Reply with only JSON: {"screens":[...]}`,
+      { modelTier: p.coachTier === "default" ? "default" : "quick", cache: false })) });
+    if (!out) return fallback;
+    ref.set({ ...out, title: L.title, at: Date.now() }).catch(() => {});
+    return out;
+  } catch { return fallback; }
+}
+// ----- lesson player: one small screen at a time -----
 async function openLesson(n) {
   const P0 = prog();
   const dlg = sheet("Lesson");
-  const body = h("div", { class: "stack" }, h("p", { class: "muted" }, "Getting your lesson ready…"));
-  put(dlg, h("div", { class: "sheet-head" }, h("span", { class: "small muted" }, `Week ${Math.ceil(n / 7)} · Lesson ${n}`), closeX(dlg)), body);
+  dlg.classList.add("player");
+  const top = h("div", { class: "ptop" }), stage = h("div", { class: "stage" }), nav = h("div", { class: "pnav" });
+  put(dlg, top, stage, nav);
+  top.replaceChildren(h("span", {}), closeX(dlg));
+  stage.replaceChildren(h("div", { class: "art pulse" }, h("span", {}, "📖")), h("p", { class: "center muted" }, "Getting your lesson ready…"));
   try {
     if (P0.tk !== "s" && !P0.lessons[n - 1]?.title) await ensureWeekLessons(Math.ceil(n / 7));
   } catch {
-    body.replaceChildren(h("p", {}, "Couldn't prepare this week's lessons. Check your connection and try again."));
+    stage.replaceChildren(h("p", { class: "center" }, "Couldn't prepare this week's lessons. Check your connection and try again."));
     return;
   }
   const P1 = prog();
   const L = P1.lessons[n - 1];
-  if (!L?.title) { body.replaceChildren(h("p", {}, "This lesson isn't ready yet.")); return; }
+  if (!L?.title) { stage.replaceChildren(h("p", { class: "center" }, "This lesson isn't ready yet.")); return; }
   const c = await lessonContent(L, P1.tk);
   if (!dlg.isConnected) return;
-  const prev = P1.pr.done?.[lessonKey(P1.tk, n)];
-  let pick = prev?.quiz ?? null;
-  const quizBox = c.quiz ? h("div", { class: "quiz stack", style: "gap:8px" }) : null;
-  const drawQuiz = () => {
-    if (!quizBox) return;
-    const q = c.quiz;
-    quizBox.replaceChildren(); put(quizBox, h("h3", {}, "Quick check"), h("p", {}, q.question),
-      ...q.options.map((o, i) => h("button", { type: "button", class: `btn opt${pick == null ? "" : i === q.answer ? " right" : i === pick ? " wrong" : ""}`, disabled: pick != null,
-        onclick: () => { pick = i; drawQuiz(); } }, o)),
-      pick != null ? h("p", { class: "small" }, pick === q.answer ? "That's right. " : "Not quite. ", q.why) : null);
-  };
-  drawQuiz();
-  const refl = h("textarea", { rows: "3", maxlength: "1000", placeholder: "Your answer (optional)", value: prev?.reflection || "" });
-  const finish = h("button", { class: "btn btn-primary", type: "button", onclick: async () => {
-    finish.disabled = true;
+  const key = lessonKey(P1.tk, n);
+  const prev = P1.pr.done?.[key];
+  const answers = { ...(prev?.answers || {}) };
+  let reflection = prev?.reflection || "";
+  const screens = [{ type: "intro" }, ...c.screens, { type: "end" }];
+  let i = 0, saved = false;
+  const answered = (k) => answers[k] != null;
+  const needs = (s, k) => ["quiz", "truefalse", "poll", "reveal"].includes(s.type) && !answered(k);
+  const save = async () => {
+    if (saved) return;
+    saved = true;
+    const correct = c.screens.reduce((t, s, k) => t + ((s.type === "quiz" || s.type === "truefalse") && answers[k + 1] === s.answer ? 1 : 0), 0);
     try {
-      await mutateProgram((x) => {
-        x.done = { ...(x.done || {}), [lessonKey(P1.tk, n)]: { date: prev?.date || S.today, at: prev?.at || Date.now(), quiz: pick, reflection: refl.value.trim().slice(0, 1000) } };
-      });
-      dlg.close();
-      toast(prev ? "Saved." : n === P1.total ? "You finished the whole program. Amazing work!" : "Lesson done. Nice work!");
+      await mutateProgram((x) => { x.done = { ...(x.done || {}), [key]: { date: prev?.date || S.today, at: prev?.at || Date.now(), quiz: correct, answers, reflection: reflection.trim().slice(0, 1000) } }; });
       renderAll();
-    } catch (err) { toast(writeError(err)); finish.disabled = false; }
-  } }, prev ? "Save" : "Finish lesson");
-  body.replaceChildren();
-  put(body,
-    h("h2", {}, L.title),
-    ...c.cards.map((k) => h("section", { class: "lcard" }, k.heading ? h("h3", {}, k.heading) : null, h("p", {}, k.text))),
-    quizBox,
-    h("label", { class: "field" }, h("strong", {}, "Reflect"), h("span", { class: "small muted" }, c.reflect), refl),
-    h("div", {}, finish));
-  body.dataset.reflect = c.reflect;
+    } catch (err) { saved = false; toast(writeError(err)); }
+  };
+  const go = (d) => { const j = i + d; if (j < 0 || j >= screens.length) return; if (d > 0 && needs(screens[i], i)) return; i = j; draw(); };
+  const art = (a) => h("div", { class: "art" }, h("span", {}, a || "✨"));
+  const choice = (label, k, val, state) => h("button", { type: "button", class: `opt${state ? " " + state : ""}`, disabled: answered(k), onclick: () => { answers[k] = val; draw(); } }, label);
+  function body(s, k) {
+    switch (s.type) {
+      case "intro": return [photoImg(weekPhoto(P1, L.week), "sheet-photo"), h("div", { class: "art nophoto-art" }, h("span", {}, "📚")),
+        h("p", { class: "kicker" }, `Week ${L.week} · Lesson ${n}`), h("h2", { class: "serif big" }, L.title),
+        h("p", { class: "center muted" }, `${L.theme} · about ${Math.max(2, Math.round(c.screens.length / 2.5))} minutes`)];
+      case "text": return [art(s.art), s.title ? h("h2", { class: "serif big" }, s.title) : null, h("p", { class: "say" }, s.text)];
+      case "quiz": return [art(s.art), h("p", { class: "say" }, s.question), h("div", { class: "opts" }, s.options.map((o, j) =>
+        choice(o, k, j, answered(k) ? (j === s.answer ? "right" : j === answers[k] ? "wrong" : "") : ""))),
+        answered(k) ? h("p", { class: `why ${answers[k] === s.answer ? "ok" : ""}` }, answers[k] === s.answer ? "✅ Nice! " : "💡 Not quite. ", s.why) : null];
+      case "truefalse": return [art(s.art), h("p", { class: "say" }, s.statement), h("div", { class: "opts two" },
+        [["True", true], ["False", false]].map(([lab, v]) => choice(lab, k, v, answered(k) ? (v === s.answer ? "right" : v === answers[k] ? "wrong" : "") : ""))),
+        answered(k) ? h("p", { class: `why ${answers[k] === s.answer ? "ok" : ""}` }, answers[k] === s.answer ? "✅ Right! " : "💡 Actually, ", s.why) : null];
+      case "poll": return [art(s.art), h("p", { class: "say" }, s.question), h("div", { class: "opts" }, s.options.map((o, j) => choice(o, k, j, answers[k] === j ? "picked" : ""))),
+        answered(k) && s.reply ? h("p", { class: "why ok" }, "💬 ", s.reply) : null];
+      case "reveal": return [art(s.art), h("p", { class: "say" }, s.text), answered(k)
+        ? h("div", { class: "revealed" }, s.reveal)
+        : h("button", { type: "button", class: "btn btn-primary revealbtn", onclick: () => { answers[k] = 1; draw(); } }, "Tap to reveal")];
+      case "scale": {
+        const v = answers[k] ?? 5;
+        const out = h("div", { class: "scaleval num" }, String(v));
+        const r = h("input", { type: "range", min: "1", max: "10", step: "1", value: String(v), "aria-label": s.question,
+          oninput: () => { answers[k] = Number(r.value); out.textContent = r.value; } });
+        return [art(s.art), h("p", { class: "say" }, s.question), out, r, h("div", { class: "scalelabs small muted" }, h("span", {}, s.low), h("span", {}, s.high))];
+      }
+      case "reflect": {
+        const ta = h("textarea", { rows: "4", maxlength: "1000", placeholder: "Type your answer (optional)", value: reflection, oninput: () => { reflection = ta.value; } });
+        return [art(s.art), h("p", { class: "say" }, s.question), ta, h("p", { class: "small muted center" }, "Your coach can see this and may bring it up.")];
+      }
+      case "end": {
+        save();
+        const done = Object.keys(P1.pr.done || {}).filter((x) => x.startsWith(P1.tk + "-")).length + (prev ? 0 : 1);
+        return [h("div", { class: "confetti", "aria-hidden": "true" }, Array.from({ length: 18 }, (_, j) => h("i", { style: `--x:${(j * 37) % 100}%;--d:${(j % 6) * 0.12}s;--c:${["var(--accent)", "var(--green)", "var(--yellow)", "var(--red)", "#4aa8e8"][j % 5]}` }))),
+          art("🎉"), h("h2", { class: "serif big" }, "Lesson complete!"),
+          h("p", { class: "center muted" }, n === P1.total ? "That was the last one. You finished the whole program!" : `${done} of ${P1.total} lessons done. See you tomorrow for the next one.`)];
+      }
+    }
+  }
+  function draw() {
+    const s = screens[i];
+    top.replaceChildren(h("div", { class: "segs", "aria-label": `Screen ${i + 1} of ${screens.length}` },
+      screens.map((_, j) => h("i", { class: j <= i ? "on" : "" }))), closeX(dlg));
+    stage.replaceChildren();
+    put(stage, body(s, i));
+    stage.classList.remove("in"); void stage.offsetWidth; stage.classList.add("in");
+    const last = s.type === "end";
+    nav.replaceChildren();
+    put(nav, i > 0 && !last ? h("button", { class: "btn", type: "button", onclick: () => go(-1) }, "Back") : h("span", {}),
+      h("button", { class: "btn btn-primary next", type: "button", disabled: needs(s, i),
+        onclick: () => (last ? dlg.close() : go(1)) }, last ? "Done" : s.type === "intro" ? "Start" : screens[i + 1]?.type === "end" ? "Finish" : "Continue"));
+    stage.scrollTop = 0;
+  }
+  dlg.addEventListener("keydown", (e) => { if (e.target.tagName === "TEXTAREA" || e.target.type === "range") return; if (e.key === "ArrowRight") go(1); if (e.key === "ArrowLeft") go(-1); });
+  let x0 = null;
+  stage.addEventListener("pointerdown", (e) => { if (e.pointerType === "touch") x0 = e.clientX; });
+  stage.addEventListener("pointerup", (e) => { if (x0 == null) return; const dx = e.clientX - x0; x0 = null; if (Math.abs(dx) > 60 && e.target.type !== "range") go(dx < 0 ? 1 : -1); });
+  draw();
 }
+
 function openLessonList() {
   const P0 = prog();
   const dlg = sheet("All lessons");
@@ -1149,31 +1387,162 @@ async function setWeeklyGoal(text) {
   await mutateProgram((x) => { x.goals = { ...(x.goals || {}), [`${P0.tk}:w${P0.week}`]: { text: String(text).slice(0, 300), at: Date.now() } }; });
 }
 
+
+// ---------- look: theme and photos (per person, in Settings → Appearance) ----------
+// Light with photos is the default for everyone; dark and no-photos are opt-outs.
+function lookOf(prof) {
+  const t = ["light", "dark", "system"].includes(prof?.theme) ? prof.theme : "light";
+  return { theme: t, photos: prof?.photos !== false };
+}
+function applyLook(look) {
+  const dark = look.theme === "dark" || (look.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.documentElement.dataset.photos = look.photos ? "on" : "off";
+  store.set("sp.look", JSON.stringify(look));
+}
+function savedLook() { try { return JSON.parse(store.get("sp.look") || "null") || lookOf(null); } catch { return lookOf(null); } }
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => applyLook(S.prof ? lookOf(S.prof) : savedLook()));
+applyLook(savedLook());
+
+// Stock photos (Unsplash license), published next to the page under photos/.
+const PHOTOS = ["mountains", "bowl", "table", "pasta-salad", "calm", "plates", "veggies", "meal-prep", "restaurant", "running", "sleep", "mountains", "salmon-bowl", "breakfast", "workout", "salad"];
+const PHOTO_WORDS = [["water", "water"], ["drink", "water"], ["sleep", "sleep"], ["rest", "sleep"], ["walk", "running"], ["run", "running"], ["move", "running"], ["exercise", "workout"], ["strength", "workout"], ["active", "workout"], ["stress", "calm"], ["mind", "calm"], ["emotion", "calm"], ["feel", "calm"], ["thought", "calm"], ["restaurant", "restaurant"], ["social", "restaurant"], ["eating out", "restaurant"], ["party", "restaurant"], ["plan", "meal-prep"], ["prep", "meal-prep"], ["cook", "plates"], ["kitchen", "veggies"], ["grocer", "veggies"], ["environment", "veggies"], ["protein", "salmon-bowl"], ["breakfast", "breakfast"], ["snack", "breakfast"], ["night", "sleep"], ["habit", "table"], ["density", "bowl"], ["color", "bowl"], ["vegetable", "salad"], ["maintain", "salad"], ["goal", "mountains"], ["why", "mountains"], ["start", "mountains"]];
+const photoSrc = (name) => `photos/${name}.webp`;
+function weekPhoto(P0, week) {
+  if (P0.tk === "s") return photoSrc(PHOTOS[(week - 1) % PHOTOS.length]);
+  const theme = String(P0.lessons.find((l) => l.week === week)?.theme || "").toLowerCase();
+  const hit = PHOTO_WORDS.find(([w]) => theme.includes(w));
+  return photoSrc(hit ? hit[1] : PHOTOS[(week - 1) % PHOTOS.length]);
+}
+const photoImg = (src, cls = "", alt = "") => h("img", { class: `photo ${cls}`, src, alt, decoding: "async" });
+
+// ---------- small line icons for the checklist ----------
+const ICONS = {
+  meal: '<path d="M7 3v8M5 3v5a2 2 0 0 0 4 0V3M7 11v10M17 3c-2 0-3 2-3 5s1 4 3 4v9" />',
+  scale: '<rect x="3" y="4" width="18" height="16" rx="4"/><path d="M8 9a4 4 0 0 1 8 0M12 9l1.5-2"/>',
+  book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2zM4 19V5M8 7h7"/>',
+  drop: '<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/>',
+  steps: '<path d="M7 14c-1.5 0-3-1.5-3-4s1-5 3-5 3 2 3 4-1 5-3 5zM8 18a2 2 0 1 1-4 0v-2h4zM17 18c1.5 0 3-1.5 3-4s-1-5-3-5-3 2-3 4 1 5 3 5zM16 22a2 2 0 1 0 4 0v-2h-4z"/>',
+  flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+};
+function icon(name) {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor");
+  s.setAttribute("stroke-width", "1.9"); s.setAttribute("stroke-linecap", "round"); s.setAttribute("stroke-linejoin", "round"); s.setAttribute("aria-hidden", "true");
+  s.innerHTML = ICONS[name];
+  return s;
+}
+
+// ---------- water ----------
+const WATER_GOAL = 8;
+function glassSvg() {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("viewBox", "0 0 40 50"); s.setAttribute("aria-hidden", "true");
+  s.innerHTML = '<path class="fill" d="M8.6 16h22.8l-2.6 28.2a3 3 0 0 1-3 2.8H14.2a3 3 0 0 1-3-2.8z"/><path class="cup" d="M5 4h30l-3.6 40.4A3 3 0 0 1 28.4 47H11.6a3 3 0 0 1-3-2.6z"/>';
+  return s;
+}
+function openWater() {
+  const dlg = sheet("Water");
+  let n = Math.min(WATER_GOAL, Number(S.days[S.today]?.water) || 0);
+  const sub = h("p", { class: "center small muted" });
+  const grid = h("div", { class: "glasses" });
+  const draw = () => {
+    sub.textContent = `${n} of ${WATER_GOAL} glasses · ${n * 8} fl oz`;
+    grid.replaceChildren(...Array.from({ length: WATER_GOAL }, (_, i) => {
+      const b = h("button", { type: "button", class: `glass${i < n ? " on" : ""}`, "aria-label": `${i + 1} glass${i ? "es" : ""}`, "aria-pressed": String(i < n),
+        onclick: () => { n = i + 1 === n ? i : i + 1; draw(); save(); } });
+      b.append(glassSvg());
+      return b;
+    }));
+  };
+  let timer;
+  const save = () => { clearTimeout(timer); timer = setTimeout(() => mutateDay(S.today, (d) => { if ((Number(d.water) || 0) === n) return false; d.water = n; }).then(renderAll).catch((e) => toast(writeError(e))), 350); };
+  put(dlg, h("div", { class: "sheet-head" }, h("span", {}), closeX(dlg)),
+    photoImg(photoSrc("water"), "sheet-photo"),
+    h("h2", { class: "center serif" }, `Drink ${WATER_GOAL} glasses of water`), sub, grid,
+    h("p", { class: "center small muted" }, "Tap a glass each time you finish one. Water helps with fullness and energy."),
+    h("div", { class: "center" }, h("button", { class: "btn btn-primary", type: "button", onclick: () => dlg.close() }, "Done")));
+  draw();
+}
+
+// ---------- weigh in ----------
+function openWeigh() {
+  const dlg = sheet("Weigh in");
+  const d = S.days[S.today];
+  const lw = latestWeight();
+  const inp = h("input", { type: "number", inputmode: "decimal", step: "0.1", min: "60", max: "800", value: d?.weight ?? "", placeholder: lw ? String(lw.weight) : "lb" });
+  const save = h("button", { class: "btn btn-primary", type: "button", onclick: async () => {
+    const lb = Number(inp.value);
+    if (!(lb >= 60 && lb <= 800)) { toast("Enter your weight in pounds."); return; }
+    save.disabled = true;
+    try { await setWeight(S.today, Math.round(lb * 10) / 10); dlg.close(); toast("Weight logged. Nice!"); renderAll(); }
+    catch (err) { toast(writeError(err)); save.disabled = false; }
+  } }, "Save");
+  put(dlg, h("div", { class: "sheet-head" }, h("h2", { class: "serif" }, "Weigh in"), closeX(dlg)),
+    h("p", { class: "small muted" }, "Same time each morning works best: after the bathroom, before eating. Day-to-day bounces are normal; the trend is what counts."),
+    lw ? h("p", { class: "small" }, `Last: ${lw.weight} lb on ${dTiny(lw.date)}`) : null,
+    h("label", { class: "field" }, "Today's weight (lb)", inp), h("div", {}, save));
+  inp.focus();
+}
+
 // ----- the Today card -----
+function dayScore(date) {
+  const doc = S.days[date] || {};
+  const items = Array.isArray(doc.items) ? doc.items : [];
+  const meals = ["breakfast", "lunch", "dinner"].filter((m) => items.some((i) => String(i.meal).toLowerCase() === m)).length;
+  const lesson = Object.values(S.program?.done || {}).some((v) => v?.date === date);
+  return ((doc.weight != null ? 1 : 0) + meals / 3 + (lesson ? 1 : 0) + Math.min(1, (Number(doc.water) || 0) / WATER_GOAL)) / 4;
+}
+function weekStrip() {
+  const dow = (new Date(S.today + "T12:00:00Z").getUTCDay() + 6) % 7;
+  const mon = addDays(S.today, -dow);
+  return h("div", { class: "weekstrip", role: "img", "aria-label": "This week's progress" }, Array.from({ length: 7 }, (_, i) => {
+    const date = addDays(mon, i), future = date > S.today;
+    const pct = future ? 0 : Math.round(dayScore(date) * 100);
+    return h("div", { class: `d${date === S.today ? " today" : ""}${future ? " future" : ""}`, title: future ? "" : `${dShort(date)}: ${pct}% of the daily checklist` },
+      h("div", { class: `ring${pct >= 100 ? " full" : ""}`, style: `--pct:${pct}` }), "MTWTFSS"[i]);
+  }));
+}
+function taskRow({ ic, title, sub, done, meter, onclick, thumb }) {
+  return h("li", {}, h("button", { type: "button", class: `task${done ? " done" : ""}`, onclick, disabled: !onclick },
+    thumb ? photoImg(thumb, "thumb") : null,
+    h("span", { class: "ic" }, icon(done ? "check" : ic)),
+    h("span", { class: "tx" }, h("strong", {}, title), sub ? h("span", {}, sub) : null,
+      meter != null ? h("div", { class: "meter" }, h("div", { style: `width:${Math.min(100, Math.round(meter * 100))}%` })) : null),
+    onclick ? h("span", { class: "go", "aria-hidden": "true" }, "›") : null));
+}
 function programCard(d) {
   if (!programOn()) return null;
   if (S.program === undefined) return null;
   ensureProgramStart();
+  prepareTodaysLesson();
   const P0 = prog();
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
-  const tasks = [];
-  tasks.push({ done: d.weight != null, text: d.weight != null ? `Weighed in: ${d.weight} lb` : "Weigh in" });
-  tasks.push({ done: meals.length === 3, text: `Log breakfast, lunch and dinner (${meals.length} of 3)` });
-  if (P0.finished) tasks.push({ done: true, text: "Program complete. Every lesson is done!" });
-  else if (P0.next) tasks.push({ done: false, text: P0.next.title ? `Today's lesson: ${P0.next.title}` : "Today's lesson",
-    extra: P0.behind > 1 ? ` (${P0.behind - 1} more to catch up)` : "", act: h("button", { class: "btn btn-primary sm", type: "button", onclick: () => openLesson(P0.next.n) }, "Read") });
-  else tasks.push({ done: true, text: P0.doneToday.length ? `Lesson done: ${P0.doneToday[0].title || "today's lesson"}` : "All caught up. Next lesson tomorrow." });
-  tasks.push(P0.goal
-    ? { done: true, text: `This week's goal: ${P0.goal.text}`, act: h("button", { class: "btn sm", type: "button", onclick: openGoal }, "Edit") }
-    : { done: false, text: "Set this week's goal", act: h("button", { class: "btn sm", type: "button", onclick: openGoal }, "Set goal") });
+  const water = Math.min(WATER_GOAL, Number(S.days[S.today]?.water) || 0);
+  const toForms = () => todayForms?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const tasks = [
+    { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: toForms },
+    d.weight != null ? { ic: "scale", title: "Weight logged", sub: `${d.weight} lb`, done: true, onclick: openWeigh } : { ic: "scale", title: "Weigh in", sub: "Step on the scale and log it", done: false, onclick: openWeigh },
+  ];
+  if (P0.finished) tasks.push({ ic: "book", title: "Program complete", sub: "Every lesson is done. Amazing!", done: true, onclick: openLessonList });
+  else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `Today's lesson · about 5 minutes${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
+  else tasks.push({ ic: "book", title: "Lesson done", sub: P0.doneToday.length ? P0.doneToday[0].title || "Today's lesson" : "All caught up. Next lesson tomorrow.", done: true, onclick: openLessonList });
+  tasks.push({ ic: "drop", title: water >= WATER_GOAL ? "Water goal met" : "Drink water", sub: `${water} of ${WATER_GOAL} glasses`, done: water >= WATER_GOAL, meter: water / WATER_GOAL, onclick: openWater });
+  if (d.steps != null) {
+    const goal = Number(S.prof.stepGoal) || 6000;
+    tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
+  }
+  tasks.push(P0.goal ? { ic: "flag", title: "This week's goal", sub: P0.goal.text, done: true, onclick: openGoal } : { ic: "flag", title: "Set this week's goal", sub: P0.lastGoal ? "Look back at last week, then pick one small goal" : "One small, specific goal for the week", done: false, onclick: openGoal });
   const n = tasks.filter((t) => t.done).length;
   return h("section", { class: "card program" },
-    h("div", { class: "phead" }, h("div", {}, h("h2", {}, `Day ${P0.day} · Week ${P0.week}`), h("div", { class: "small muted" }, `${P0.theme}${P0.tk === "s" ? "" : ` · ${P0.name}`}`)),
-      h("span", { class: "pcount num", "aria-label": `${n} of ${tasks.length} done today` }, `${n}/${tasks.length}`)),
-    h("ul", { class: "tasks" }, tasks.map((t) => h("li", { class: t.done ? "done" : "" },
-      h("span", { class: `tick${t.done ? " on" : ""}`, "aria-hidden": "true" }, t.done ? "✓" : ""),
-      h("span", { class: "grow" }, t.text, t.extra ? h("span", { class: "small muted" }, t.extra) : null), t.act || null))),
-    h("button", { class: "linkish small", type: "button", onclick: openLessonList }, "All lessons"));
+    h("div", { class: "banner" }, photoImg(weekPhoto(P0, P0.week)),
+      h("div", { class: "over" }, h("small", {}, `Day ${P0.day} · Week ${P0.week}${P0.tk === "s" ? "" : ` · ${P0.name}`}`), h("div", { class: "serif", style: "font-size:22px" }, P0.theme))),
+    h("div", { class: "phead nophoto" }, h("div", {}, h("h2", {}, `Day ${P0.day} · Week ${P0.week}`), h("div", { class: "small muted" }, `${P0.theme}${P0.tk === "s" ? "" : ` · ${P0.name}`}`))),
+    weekStrip(),
+    h("ul", { class: "tlist" }, tasks.map(taskRow)),
+    h("div", { class: "pfoot" }, h("button", { class: "linkish small", type: "button", onclick: openLessonList }, "All lessons"),
+      h("span", { class: "small muted num", "aria-label": `${n} of ${tasks.length} done today` }, `${n} of ${tasks.length} done today`)));
 }
 
 // ----- custom programs -----
@@ -1375,6 +1744,8 @@ function renderSettings() {
     weight: h("input", { type: "number", inputmode: "decimal", step: "0.1", min: "60", max: "800", value: p.startWeight ?? lw?.weight ?? "" }),
     goal: h("input", { type: "number", inputmode: "decimal", step: "0.1", min: "60", max: "800", value: p.goalWeight ?? "" }),
     pace: h("select", {}, [0.5, 1, 1.5, 2].map((x) => h("option", { value: String(x) }, `${x} lb per week`))),
+    theme: h("select", {}, h("option", { value: "light" }, "Light"), h("option", { value: "dark" }, "Dark"), h("option", { value: "system" }, "Match my device")),
+    photos: h("input", { type: "checkbox" }),
     level: h("select", {}, ACT_LEVELS.map(([k, , label, desc]) => h("option", { value: k }, `${label}: ${desc}`))),
     why: h("textarea", { rows: "3", placeholder: "Your big picture: why this matters to you" }),
     tier: h("select", {}, h("option", { value: "quick" }, "Fast (uses the least Claude usage)"), h("option", { value: "default" }, "Thorough (slower, uses more)")),
@@ -1389,6 +1760,10 @@ function renderSettings() {
   f.sex.value = p.sex || "";
   f.pace.value = String(p.pace ?? 1);
   f.level.value = actLevel(p.activityLevel)[0];
+  f.theme.value = lookOf(p).theme;
+  f.photos.checked = lookOf(p).photos;
+  const previewLook = () => applyLook({ theme: f.theme.value, photos: f.photos.checked });
+  f.theme.addEventListener("input", previewLook); f.photos.addEventListener("input", previewLook);
   f.why.value = p.bigPicture || "";
   f.tier.value = p.coachTier || "quick";
   f.style.value = COACH_STYLES.some((o) => o[0] === p.coachStyle) ? p.coachStyle : "balanced";
@@ -1418,14 +1793,14 @@ function renderSettings() {
   const showLevel = () => { levelHint.textContent = f.activity.checked && f.level.value !== "sedentary" ? "Your Apple Watch calories are already added back each day, so Sedentary avoids counting exercise twice." : "Pick what a normal week looks like, not your best week."; };
   f.level.addEventListener("input", showLevel); f.activity.addEventListener("input", showLevel); showLevel();
   const MODES = [
-    ["noom", "Noom-style", "Foods get green, yellow or red by calorie density, your budget has a zone of about 150 calories either way, and you get a daily lesson, a short daily checklist and a weekly goal. Your coach asks questions to help you find your own answers."],
+    ["noom", "Noom-style", "Foods get green, yellow or orange by calorie density, your budget has a zone of about 150 calories either way, and you get a daily lesson, a short daily checklist and a weekly goal. Your coach asks questions to help you find your own answers."],
     ["classic", "Classic", "Just the numbers: calories, protein and what's left. No colors, lessons or weekly goals. Your coach is practical and direct."],
   ];
   const modeBox = h("div", { class: "choices" });
   const drawModes = () => modeBox.replaceChildren(...MODES.map(([k, label, desc]) => h("button", { type: "button", class: "choice", "aria-pressed": String(f.mode.value === k),
     onclick: () => { f.mode.value = k; drawModes(); } }, h("strong", {}, label), h("span", { class: "small muted" }, desc))));
   drawModes();
-  const secs = [["program", "Program"], ["health", "Health data"], ["budget", "Budget & pace"], ["coach", "Your coach"], ...(f.showActivity ? [["activity", "Activity"]] : [])];
+  const secs = [["program", "Program"], ["health", "Health data"], ["budget", "Budget & pace"], ["coach", "Your coach"], ["look", "Appearance"], ...(f.showActivity ? [["activity", "Activity"]] : [])];
   const cur = secs.some((x) => x[0] === S.setSec) ? S.setSec : "program";
   const subtabs = h("div", { class: "subtabs", role: "tablist", "aria-label": "Settings sections" },
     secs.map(([id, label]) => h("button", { type: "button", role: "tab", class: "subtab", "data-id": id, "aria-selected": String(id === cur) }, label)));
@@ -1449,6 +1824,10 @@ function renderSettings() {
       toneHint,
       h("label", { class: "field" }, "Custom instructions (optional)", f.notes),
       h("label", { class: "field" }, "Coach speed", f.tier)],
+    look: [
+      h("label", { class: "field" }, "Theme", f.theme),
+      h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.photos, "Show photos"),
+      h("p", { class: "small muted" }, "Changes show right away; Save keeps them for you on every device. Photos are free stock photos from Unsplash.")],
     activity: [
       h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
       h("p", { class: "small muted" }, "Active calories, exercise minutes and steps come in from Health Auto Export by email. Ask the coach to \"import my health data\" anytime.")],
@@ -1464,6 +1843,8 @@ function renderSettings() {
         x.mode = f.mode.value;
         x.pace = Number(f.pace.value);
         x.activityLevel = f.level.value;
+        x.theme = f.theme.value;
+        x.photos = f.photos.checked;
         x.bigPicture = f.why.value.trim().slice(0, 600);
         x.coachTier = f.tier.value === "default" ? "default" : "quick";
         x.coachStyle = f.style.value;
@@ -1484,6 +1865,7 @@ function renderSettings() {
         }
       });
       if (Number(f.weight.value) >= 60 && Number(f.weight.value) <= 800 && !S.days[today]?.weight && !lw) await setWeight(today, Number(f.weight.value));
+      applyLook(lookOf(S.prof));
       toast(!hasTarget && !c ? "Saved. Add sex, age, height and weight to set a calorie target." : "Saved.");
       setTimeout(() => { renderSettings(); buildTodayForms(); }, 300);
     } catch (err) { toast(writeError(err)); }
@@ -1723,7 +2105,7 @@ SAFETY
 const NOOM = `PROGRAM STYLE: Noom-style.
 - Coach with motivational interviewing: open questions, affirmations, reflections, and brief summaries. Ask at most one question per reply.
 - Tie suggestions to their own reasons for losing weight when you know them.
-- When logging, set each item's color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, red above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, red above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, red above 0.5. Whole grains one step greener. No food is off-limits and no color is "bad"; nuts, olive oil and salmon are red and still good choices.
+- When logging, set each item's color by calorie density (kcal per gram): solids green under 1.0, yellow 1.0 to 2.4, orange above 2.4; soups, sauces and spreads green under 0.5, yellow 0.5 to 1.0, orange above 1.0; drinks (kcal per mL) green under 0.4, yellow 0.4 to 0.5, orange above 0.5. Whole grains one step greener. No food is off-limits and no color is "bad"; nuts, olive oil and salmon are orange and still good choices.
 - Their daily budget has a zone of about 150 calories either side; landing anywhere in the zone is a win.
 - They follow a program in the app: a short lesson each day, a daily checklist (weigh in, log meals, read the lesson) and a weekly goal (see PROGRAM in the app data). Connect advice to today's lesson when it fits naturally, and nudge gently toward an unread lesson at most once a day.
 - Weekly goal: if there's no goal for this week, offer once to help set one. Help them shape it into something small and specific (what, when, how often) that they believe they can do, and save it with set_weekly_goal once they agree to the wording. If there was a goal last week, ask how it went first and celebrate any progress.`;
@@ -1759,6 +2141,7 @@ function context(message) {
   }
   const lw = latestWeight();
   if (lw) L.push(`Latest weight: ${lw.weight} lb on ${lw.date}.`);
+  if (programOn() && S.days[today]?.water) L.push(`Water today: ${S.days[today].water} of ${WATER_GOAL} glasses.`);
   if (programOn() && S.program !== undefined) {
     const g = prog();
     L.push(`PROGRAM: ${g.name}, day ${g.day}, week ${g.week} of ${Math.ceil(g.total / 7)} (theme: ${g.theme}). ${g.finished ? "They've finished every lesson." : g.next ? `Next lesson to read: "${g.next.title || "this week's first lesson"}"${g.behind > 1 ? ` (${g.behind} waiting)` : ""}.` : "Today's lesson is done."}`);
@@ -1933,7 +2316,7 @@ function coachTools(chip) {
         date: DATE, meal: { type: "string", enum: MEALS },
         items: { type: "array", items: { type: "object", required: ["item", "qty", "kcal", "protein", "carbs", "fat", "note"], properties: {
           item: { type: "string", description: "Short name with portion, e.g. 'Greek yogurt, nonfat (170 g cup)'" }, qty: { type: "number" }, ...NUTR,
-          ...(S.prof.mode === "noom" ? { color: { type: "string", enum: ["green", "yellow", "red"], description: "Calorie-density color" } } : {}),
+          ...(S.prof.mode === "noom" ? { color: { type: "string", enum: ["green", "yellow", "orange"], description: "Calorie-density color" } } : {}),
           note: { type: "string", description: "How the estimate was made and any assumptions" } } } } } },
       async execute(a) {
         const date = vDate(a.date), meal = vMeal(a.meal);
@@ -1943,7 +2326,7 @@ function coachTools(chip) {
           const r = { item: String(i.item ?? "").trim().slice(0, 200), qty: num(i.qty ?? 1, "qty", 0.01, 100), kcal: num(i.kcal, "kcal", 0, 5000),
             p: num(i.protein ?? 0, "protein", 0, 500), c: num(i.carbs ?? 0, "carbs", 0, 1000), f: num(i.fat ?? 0, "fat", 0, 500), note: i.note ? String(i.note).slice(0, 500) : "" };
           const g = optNum(i.grams, "grams", 0, 5000); if (g != null) r.grams = g;
-          if (["green", "yellow", "red", "orange"].includes(i.color)) r.color = i.color === "orange" ? "red" : i.color;
+          if (["green", "yellow", "red", "orange"].includes(i.color)) r.color = i.color === "red" ? "orange" : i.color;
           if (!r.item) throw new ToolErr("every item needs a name");
           return r;
         });
