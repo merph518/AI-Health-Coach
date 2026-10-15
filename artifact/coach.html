@@ -145,7 +145,7 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.6); }
 dialog.sheet > * + * { margin-top: 12px; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .sheet-head h2 { margin: 0; }
-.btn.x { min-height: 32px; padding: 2px 10px; }
+.btn.x, html[data-theme="light"] .btn.x { min-height: 0; width: 36px; height: 36px; padding: 0; display: inline-grid; place-items: center; line-height: 1; flex: none; }
 .lcard { background: var(--surface-2); border-radius: 12px; padding: 12px 14px; }
 .lcard h3 { font-size: 15px; font-weight: 600; margin: 0 0 6px; }
 .lcard p { margin: 0; line-height: 1.5; }
