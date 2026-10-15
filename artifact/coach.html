@@ -169,6 +169,8 @@ dialog.confirm .quote { font-size: 13px; color: var(--ink-2); background: var(--
 dialog.confirm .acts { display: flex; justify-content: flex-end; gap: 8px; }
 .typing { color: var(--ink-3); font-style: italic; }
 .daybar { font-size: 13px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; }
+#v-coach:not([hidden]) { display: flex; flex-direction: column; min-height: calc(100dvh - var(--hdr-h, 64px) - var(--tabs-h, 60px) - 1px); margin-bottom: -24px; }
+#v-coach > .chat { flex: 1 0 auto; align-content: start; }
 .composer { position: sticky; bottom: 0; background: var(--bg); padding: 10px 0 12px; display: grid; gap: 8px; border-top: 1px solid var(--border); }
 .composer .line { display: flex; gap: 8px; align-items: end; }
 .composer textarea { flex: 1; min-width: 0; resize: none; font-size: 16px; border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px; background: var(--surface); max-height: 160px; min-height: 42px; line-height: 22px; overflow-y: hidden; }
@@ -633,8 +635,11 @@ function pinHeader() {
   // Round down so the tabs tuck a hair under the header; rounding up leaves a sub-pixel gap that
   // shows scrolled content (like a card's blue border) through the header's line.
   const set = () => document.documentElement.style.setProperty("--hdr-h", Math.floor(hd.getBoundingClientRect().height) - 1 + "px");
-  set();
-  if (window.ResizeObserver) new ResizeObserver(set).observe(hd);
+  // The coach view fills the rest of the screen so its input bar sits at the bottom even with few messages.
+  const tabs = $("tabs");
+  const setTabs = () => document.documentElement.style.setProperty("--tabs-h", tabs.getBoundingClientRect().height + 16 + "px");
+  set(); setTabs();
+  if (window.ResizeObserver) { new ResizeObserver(set).observe(hd); new ResizeObserver(setTabs).observe(tabs); }
 }
 async function boot() {
   pinHeader();
