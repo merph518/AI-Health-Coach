@@ -919,7 +919,7 @@ function renderSettings() {
   for (const el of [f.sex, f.age, f.ft, f.inch, f.weight, f.pace]) el.addEventListener("input", update);
   update();
   const save = h("button", { class: "btn btn-primary", type: "submit" }, "Save");
-  v.replaceChildren(h("form", { class: "card stack", novalidate: true, onsubmit: async (e) => {
+  v.replaceChildren(h("div", { class: "stack" }, h("form", { class: "card stack", novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
     // Save whatever is filled in; the calorie target waits until the formula has what it needs.
     const c = compute();
@@ -968,7 +968,7 @@ function renderSettings() {
     h("label", { class: "field" }, "Custom instructions (optional)", f.notes),
     h("label", { class: "field" }, "Coach speed", f.tier),
     f.showActivity && h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
-    h("div", {}, save)), hasTarget ? budgetCard(p, lw, f) : "");
+    h("div", {}, save)), hasTarget ? budgetCard(p, lw, f) : null));
 }
 
 // Daily calorie budget: recalculate from any weight, or set it by hand. Starts today; past
