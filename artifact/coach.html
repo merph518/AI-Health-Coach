@@ -169,6 +169,7 @@ details.day > summary::-webkit-details-marker { display: none; }
 .mwrap { display: grid; gap: 6px; max-width: 88%; }
 .mwrap.user { justify-self: end; justify-items: end; }
 .mwrap.bot { justify-self: start; justify-items: start; }
+.mtime { font-size: 11px; line-height: 1; color: var(--ink-3); padding: 0 6px; margin-top: -2px; font-variant-numeric: tabular-nums; }
 .mwrap .msg { max-width: none; min-width: 0; touch-action: pan-y; transition: transform .18s, opacity .18s; }
 dialog.confirm { margin: auto; width: min(340px, calc(100vw - 32px)); padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
 dialog.confirm::backdrop { background: rgba(0,0,0,.6); }
@@ -3764,7 +3765,9 @@ function bubble(m) {
 // A saved message: swipe it sideways (touch) and confirm to remove it from the chat log.
 function savedBubble(m) {
   const b = bubble(m);
-  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, b);
+  const at = Number(m.at) ? new Date(Number(m.at)) : null;
+  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, b,
+    at ? h("time", { class: "mtime onbg", datetime: at.toISOString(), title: at.toLocaleString() }, at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) : null);
   const ask = async () => {
     if (S.busy || document.querySelector("dialog.confirm")) return;
     const ok = await confirmPopup("Are you sure you want to delete this message?", snippet(m.text) || (m.photo ? "📷 Photo" : ""), "Delete");
