@@ -3284,8 +3284,11 @@ function checkinPlan() {
   }
   // This week's goal (Noom-style): ask how it's going once a day, starting the day after it was set.
   if (programOn() && S.program !== undefined && !said.has("goal")) {
-    const g = prog().goal;
+    const P0 = prog(), g = P0.goal;
     if (g?.text && (!g.at || dateIn(tz(), new Date(g.at)) < S.today)) topics.push({ k: "goal", facts: [`This week's goal, in their words: "${String(g.text).slice(0, 300)}"${g.at ? ` (set ${dateIn(tz(), new Date(g.at))})` : ""}.`] });
+    // No goal yet this week: invite them to set one (still once a day, as the same "goal" topic).
+    else if (!g?.text && !P0.finished) topics.push({ k: "goal", set: true, link: true, md: "[set this week's goal](app:goal)",
+      facts: [`They haven't set a goal for this week (week ${P0.week}: ${P0.theme}) yet.${P0.lastGoal?.text ? ` Last week's goal was "${String(P0.lastGoal.text).slice(0, 200)}".` : ""}`] });
   }
   if (!asks.length && !topics.length) return null;
   return { slot: slotTime, part: slot, asks, topics, status: d.target != null && d.cal > 0 ? `So far today: ${fmt(d.cal)} of ${fmt(d.target)} cal, ${fmt(d.target - d.cal)} left.` : "" };
@@ -3301,7 +3304,8 @@ function checkinFallback(plan) {
       const lw = latestWeight(), start = Number(S.prof.startWeight);
       if (lw && start && start - lw.weight >= 0.5) L.push(`You're down ${r1(start - lw.weight)} lb so far. Nice work!`);
     }
-    if (t.k === "goal") L.push(`How's your goal for this week going: "${String(prog().goal?.text || "").slice(0, 120)}"?`);
+    if (t.k === "goal" && t.set) L.push(`When you have a minute, ${topicLink(t)}: one small thing to aim for.`);
+    else if (t.k === "goal") L.push(`How's your goal for this week going: "${String(prog().goal?.text || "").slice(0, 120)}"?`);
     if (t.k === "checklist") L.push(t.link ? `Your ${APP_LINKS.checklist} has today's small steps waiting.` : "");
     if (t.k === "lesson" && t.link) L.push(`Today's lesson is ${topicLink(t)}, about five minutes.`);
   }
@@ -3318,7 +3322,8 @@ async function writeCheckin(plan) {
     if (t.k === "lesson") parts.push(`LESSON: one short sentence about today's lesson${t.link ? ` that makes it sound worth five minutes. They haven't done one lately, so name it with this link, exactly as written and in place of the title (the link text is the title; don't also write the title): ${topicLink(t)}` : ", naming it. No link."}`);
   }
   const goal = plan.topics.find((t) => t.k === "goal");
-  if (goal) parts.push(`WEEKLY GOAL: one warm, specific question about how this week's goal is going (see FACTS), worded for the ${plan.part} (a bedtime or evening goal in the morning: ask about last night). Curious, never a scolding. Put it with the questions${plan.asks.length ? "" : " at the end"}.`);
+  if (goal?.set) parts.push(`WEEKLY GOAL: one light, encouraging sentence inviting them to pick one small, specific goal for this week${goal.facts[0].includes("Last week") ? " (they can build on last week's)" : ""}, with this link written exactly as given: ${topicLink(goal)}. An invitation, never a must.`);
+  else if (goal) parts.push(`WEEKLY GOAL: one warm, specific question about how this week's goal is going (see FACTS), worded for the ${plan.part} (a bedtime or evening goal in the morning: ask about last night). Curious, never a scolding. Put it with the questions${plan.asks.length ? "" : " at the end"}.`);
   if (plan.asks.length) parts.push(`QUESTIONS, last, as their own paragraph (light rewording is fine, keep each one): ${plan.asks.join(" ")}`);
   const prompt = `You write one check-in message that the coach in a family weight loss app sends to ${first} to open the ${plan.part} (${when}). It shows in the chat as the coach's message.
 
@@ -3340,7 +3345,7 @@ Reply with only the message.`;
   // Keep only the links offered; add one back if it was dropped.
   text = text.replace(/\[([^\]\n]{1,60})\]\(app:([a-z]+)\)/g, (all, label, k) => (plan.topics.some((t) => t.k === k && t.link) ? all : label));
   const paras = text.split(/\n{2,}/), at = plan.asks.length && paras.length > 1 ? paras.length - 1 : paras.length;
-  for (const t of plan.topics) if (t.link && !text.includes(`(app:${t.k})`)) paras.splice(at, 0, t.k === "checklist" ? `Here's your ${APP_LINKS.checklist}.` : `When you have five minutes: ${topicLink(t)}.`);
+  for (const t of plan.topics) if (t.link && !text.includes(`(app:${t.k})`)) paras.splice(at, 0, t.k === "checklist" ? `Here's your ${APP_LINKS.checklist}.` : t.k === "goal" ? `When you have a minute, ${topicLink(t)}.` : `When you have five minutes: ${topicLink(t)}.`);
   text = paras.join("\n\n");
   return plan.status ? `${text}\n\n${plan.status}` : text;
 }
@@ -3887,14 +3892,15 @@ let coachEls = null;
 function openAppLink(k) {
   if (k === "log") return setViewSec("today", "log");
   setViewSec("today", "check");
+  if (k === "goal" && programOn() && S.program !== undefined) return openGoal();
   if (k === "lesson" && programOn() && S.program !== undefined) { const P0 = prog(); if (P0.next) openLesson(P0.next.n); else openLessonList(); }
 }
 function formatted(text) {
   const frag = document.createDocumentFragment();
   const bold = (s) => s.split(/(\*\*[^*]+\*\*)/g).map((part) => (part.startsWith("**") && part.endsWith("**") && part.length > 4 ? h("strong", {}, part.slice(2, -2)) : part));
   // [label](app:checklist|log|lesson) becomes a button that opens that part of the app.
-  const inline = (s) => s.split(/(\[[^\]\n]{1,60}\]\(app:(?:checklist|log|lesson)\))/g).flatMap((part) => {
-    const m = part.match(/^\[([^\]\n]{1,60})\]\(app:(checklist|log|lesson)\)$/);
+  const inline = (s) => s.split(/(\[[^\]\n]{1,60}\]\(app:(?:checklist|log|lesson|goal)\))/g).flatMap((part) => {
+    const m = part.match(/^\[([^\]\n]{1,60})\]\(app:(checklist|log|lesson|goal)\)$/);
     return m ? [h("button", { type: "button", class: "applink", onclick: () => openAppLink(m[2]) }, m[1])] : bold(part);
   });
   // Within a paragraph, runs of bullet or numbered lines become a list and the other lines a paragraph,
