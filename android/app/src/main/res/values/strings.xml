@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Fagerteam Coach</string>
+    <string name="owner_title">Whose phone is this?</string>
+    <string name="owner_message">Steps, active calories and exercise from this phone go into this person\'s log only.</string>
+    <string name="shortcut_owner_short">Whose phone</string>
+    <string name="shortcut_owner_long">Change whose phone this is</string>
+    <string name="rationale_title">Health Connect access</string>
+    <string name="rationale_body">Fagerteam Coach reads three things from Health Connect, for the last two weeks at most:\n\n• Steps\n• Active calories burned\n• Exercise sessions (to total your exercise minutes)\n\nIt reads them each time you open the app and saves each day\'s totals to your Fagerteam Coach log in Claude, where your step goal, calorie budget and coach use them. It never writes to Health Connect, reads nothing else, and shares nothing with anyone outside your family\'s coach.\n\nYou can turn access off anytime in Health Connect.</string>
+    <string name="rationale_done">Got it</string>
+    <string name="webview_old_title">Activity sync is off</string>
+    <string name="webview_old_message">This phone\'s Android System WebView is too old to pass steps and exercise to the coach. Update Android System WebView in the Play Store to turn syncing on. Everything else works as usual.</string>
+    <string name="webview_crashed">The coach page keeps crashing. Open the app again to retry.</string>
+</resources>
