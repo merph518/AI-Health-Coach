@@ -4169,9 +4169,18 @@ function renderChat() {
   if (checkinJob === `${S.pid}/${S.today}/${checkinPlan()?.slot}`) kids.push(chatRow("bot", h("div", { class: "msg bot" }, h("p", { class: "typing" }, "Typing…"))));
   else if (S.checkin) kids.push(chatRow("bot", h("div", { class: "mwrap bot" }, bubble(S.checkin), msgTime(S.checkin.at))));
   if (S.pending) kids.push(S.pending.el);
+  // A message left without a reply (the page closed mid-answer, or it was stopped) gets a way to ask again.
+  const last = S.chat.messages.at(-1);
+  if (!S.pending && !S.busy && last?.role === "user" && (S.stalled === last.at || Date.now() - last.at > 120000)) kids.push(noReplyRow(last));
   coachEls.list.replaceChildren(...kids);
   fitHint(composerHint());
   scrollChat();
+}
+function noReplyRow(m) {
+  return chatRow("bot", h("div", { class: "msg bot" },
+    h("p", { class: "small muted", style: "margin:0 0 8px" }, "No reply came back for this one. The page may have closed while the coach was answering." +
+      (m.photo ? " The photo wasn't kept, so send it again if the coach needs to see it." : "")),
+    h("button", { class: "btn", type: "button", onclick: () => sendMessage({ text: m.text || "Here's a photo.", retry: m.at, photoLost: !!m.photo }) }, "Try again")));
 }
 // The composer's placeholder answers the last thing the coach said: its question, the
 // check-in on screen, or else the meal that's due.
@@ -4265,7 +4274,7 @@ async function sendMessage(over) {
   E.send.disabled = true; E.cam.disabled = true; E.stop.hidden = false;
   const date = S.today;
   const checkin = over ? null : S.checkin;
-  const history = S.chat.messages.filter((m) => m.text && !m.error).slice(-12);
+  const history = S.chat.messages.filter((m) => m.text && !m.error).slice(over?.retry ? -13 : -12, over?.retry ? -1 : undefined);
   const userMsg = { role: "user", text, at: Date.now(), ...(photo ? { photo: true } : {}) };
 
   // Show the pending reply right away.
@@ -4282,7 +4291,7 @@ async function sendMessage(over) {
   try {
     await mutateChat(date, (c) => {
       if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", slot: checkin.slot, text: checkin.text, mentions: checkin.mentions || [], at: Math.min(checkin.at || Infinity, userMsg.at - 1) }); }
-      c.messages.push(userMsg);
+      if (!over?.retry) c.messages.push(userMsg);
       if (c.messages.length > 200) c.messages.splice(0, c.messages.length - 200);
     });
   } catch (e) { toast(writeError(e)); }
@@ -4291,7 +4300,8 @@ async function sendMessage(over) {
   const turns = [{ role: "user", content: RULES + "\n\n" + (S.prof.mode === "noom" ? NOOM : CLASSIC) + "\n\n" + coachPrefs(S.prof) + "\n\nAPP DATA\n" + context(text) }];
   for (const m of history) turns.push({ role: m.role === "user" ? "user" : "assistant", content: m.text + (m.photo ? "\n(sent a photo)" : "") });
   if (checkin) turns.push({ role: "assistant", content: checkin.text });
-  turns.push({ role: "user", content: (text || "Here's a photo.") + (photo ? "\n(Photo attached: use it to identify the food and judge portions, or read the label.)" : "") });
+  turns.push({ role: "user", content: (text || "Here's a photo.") + (photo ? "\n(Photo attached: use it to identify the food and judge portions, or read the label.)" : "") +
+    (over?.photoLost ? "\n(They sent a photo with this earlier, but it's no longer available. Work from the text, and ask about anything you can't tell.)" : "") });
 
   S.ctl = new AbortController();
   let reply = "", error = null;
@@ -4315,6 +4325,7 @@ async function sendMessage(over) {
       await mutateChat(date, (c) => { c.messages.push({ role: "assistant", text: finalText || "Done.", tools: chips, at: Date.now(), ...(error ? { error: true } : {}) }); });
     } catch (e) { toast(writeError(e)); }
   }
+  S.stalled = finalText || chips.length ? null : over?.retry || userMsg.at;
   S.pending = null;
   S.busy = false;
   E.send.disabled = false; E.cam.disabled = false; E.stop.hidden = true;
