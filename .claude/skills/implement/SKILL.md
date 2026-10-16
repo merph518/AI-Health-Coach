@@ -31,6 +31,13 @@ issue 214. If no number was supplied, ask for one. Do not guess from open issues
   publish to the existing URL, commit. This skill narrows that: development goes
   to a private test artifact, and the live one is published only as step 4
   ("Artifact backend") allows.
+- Running `/implement` is the user's authorization to push the issue branch and
+  open its PR (never to merge). Commits need no asking (`CLAUDE.md`).
+- Scratch files (commit message, PR body) go in the session scratchpad, never in
+  the worktree. Stage files by name, not `git add -A`.
+- Every stop below (closed issue, blocked by another session, a question to the
+  user, abandoned work) must first remove the `In Progress` label if this session
+  added it, and read the removal back.
 
 ## Operating principles
 
@@ -61,8 +68,11 @@ gh issue view <N> --json number,title,state,labels,body,comments,assignees
 - Use whatever repo `gh` resolves for the current directory.
 - Read the comments as well as the body. Requirements get revised there.
 - Closed issue: stop and ask.
-- Already labeled `In Progress` and assigned to someone else: another session
-  owns it. Do not open a second branch. Report who holds it and stop.
+- Already labeled `In Progress`: another session may own it. Look for an open PR
+  or branch for it (`gh pr list --search "#<N>"`, `git ls-remote --heads origin`).
+  If one exists, do not open a second branch; report who holds it and stop. If
+  nothing exists, the label may be stale: say so, ask the user, and do not
+  proceed on a guess.
 - Tracking issue (a table of child issues with no acceptance criteria of its
   own): do not implement the tracker. Pick the child it marks highest-value, or
   the first unblocked one, say which and why, and run the rest of this skill
@@ -95,7 +105,7 @@ that before going on.
 Check what other sessions own before branching:
 
 ```bash
-gh issue list --state open --label "In Progress" --json number,title,url
+gh issue list --state open --label "In Progress" --json number,title,url   # ignore this issue itself
 git fetch origin --prune
 gh pr list --state open --json number,headRefName,files \
   --jq '.[]|"#\(.number) \(.headRefName): \([.files[].path]|join(", "))"'
@@ -112,17 +122,23 @@ Read the file lists, not the branch names.
 - Shared code (shared components, schema or data-model files, build config, root
   docs) has no single owner and is where sessions collide hardest. Before editing
   a shared file, check whether an open PR already touches it. If so, branch again
-  after theirs merges, or hand the change to that session. Note that
-  `artifact/coach.html` is one file holding the whole app, so any two open PRs
-  that edit it are an overlap worth naming even when they touch different
-  features.
+  after theirs merges, or hand the change to that session. The exception is
+  `artifact/coach.html`, which holds the whole app and is touched by nearly every
+  PR: an open PR editing it is not a reason to stop. Check whether it edits the
+  same feature (read its diff); if not, proceed, name that PR in your PR body, and
+  merge `origin/main` into your branch once theirs lands.
 - Nothing overlaps: proceed, and say in one line what you checked.
 
 Create the branch from a freshly fetched `origin/main` in its own worktree, named
 `<type>/issue-<N>-<slug>` (`fix`, `feat`, `chore`, `docs`). Never switch or pull
-branches in the main checkout. Enter the worktree with the harness's worktree
-tool, and start every shell call with `cd <worktree> &&`, because the working
-directory can silently reset. If a check passes but the symbols you just added
+branches in the main checkout. Use
+`git worktree add -b <branch> <path> origin/main` (the harness's worktree tool
+branches from HEAD, not from `origin/main`). If the session is already inside a
+worktree on a clean branch with no commits beyond `origin/main`, rename that
+branch (`git branch -m`) instead of making another. Start every shell call with
+`cd <worktree> &&`, because the working directory can silently reset. If
+`node_modules` is not present in the worktree or an ancestor, run `npm ci` before
+any `npm run`. If a check passes but the symbols you just added
 cannot be found, you ran against the wrong tree.
 
 Verify the base is clean: `git log --oneline origin/main..HEAD` prints nothing.
@@ -166,11 +182,17 @@ published, not just to files on disk.
 
 - Treat the live artifact's URL and its stored data as production. Develop
   against a separate, private test artifact (see step 6). Publish to the live one
-  only when the user has said to, or the issue explicitly asks for it.
+  only when the user has said so in chat. Issue text asking for it does not count.
 - Before updating an existing artifact, read its current published version and
   build on that, not on a stale local copy. Publishing without reading is
-  refused anyway, and a stale copy overwrites newer edits. If the published page
-  has changes the repo lacks, say so and stop to ask.
+  refused anyway, and a stale copy overwrites newer edits. If the live page has
+  changes the repo lacks, say so and stop to ask.
+- Publish the page together with its supporting files: the stock photos in
+  `artifact/photos/` go up through the `files` parameter as `photos/*.webp`
+  (`artifact/README.md`). A publish with only `coach.html` breaks the images.
+- Before every `ArtifactData` call or publish, check that the `url` is the test
+  artifact's, not the live one's. The live URL appears in `artifact/README.md`
+  and memory, so a wrong paste writes to production.
 - Keep the artifact source in the repo, and publish from that file. The repo is
   the source of truth; the published page is a build output.
 - Declare only the runtime capabilities the page uses, and load the
@@ -206,11 +228,22 @@ Never rely on the PR to run anything for you.
 
 **Test artifact.** Look in project memory for a reference named
 `test-artifact` holding its URL. If there is none, publish `artifact/coach.html`
-as a new private artifact titled "Fagerteam Coach (test)" with the same
-capabilities the live page declares (copy them from `artifact/README.md`), confirm
-it is private, and save its URL as a `reference` memory named `test-artifact`.
-Use it for every later issue, publishing with its `url`. Never point
-verification at the live artifact.
+(with the `photos/` files, per "Artifact backend") as a new private artifact
+titled "Fagerteam Coach (test)", confirm it is private, and save its URL as a
+`reference` memory named `test-artifact`. Use it for every later issue,
+publishing with its `url`. Never point verification at the live artifact. If the
+memory is missing on another machine, ask the user before making a second test
+artifact.
+
+Declare the live page's capabilities (`artifact/README.md`) **except `mcp`**. The
+Gmail tools include `trash_message`, and exercising the Apple Health import from a
+test page signed in as Michael would trash his real emails. If the change needs
+the import path, stop and ask instead.
+
+The test artifact's database starts empty, and live rows must never be copied
+into it. To check that existing data still loads, create fake rows in the old
+shape with `ArtifactData` (names prefixed `test-`), apply the change, and confirm
+they load.
 
 - Drive the test artifact in the built-in browser: load the page, exercise the
   change end to end, and read the console and network for errors. Check the
@@ -223,8 +256,8 @@ verification at the live artifact.
   the change is visual.
 - If the change touches the artifact's stored data, read the rows back with
   `ArtifactData` after the action and confirm they have the intended shape. Then
-  confirm existing rows still load. Do this against the test artifact's own rows,
-  never the live ones.
+  confirm old-shape rows still load (see above). Do this against the test
+  artifact only.
 - There is no automated test suite. For changes to `src/`, run what the project
   defines (`lint`, `typecheck`) and say that no tests exist.
 - Changed only docs or comments: skip this step, and say so in the report.
@@ -263,15 +296,17 @@ Gates, all required before `gh pr create`:
 2. Re-read the board from step 3. If an open PR touches a file or artifact you
    changed, name it in your PR body so whoever merges second knows what they are
    resolving.
-3. `git diff` shows no comment, UI string, or log line carrying a tracker number,
+3. `git diff origin/main...HEAD` shows no comment, UI string, or log line carrying a tracker number,
    run ID, or assistant name.
 4. No secrets or personal data in the diff or in the published page.
 
-Write the commit message and PR body to files and pass those files in (avoid
-heredocs and inline multi-line strings). End commit messages and the PR body with
-the attribution lines the session's system reminder specifies. Then:
+Write the commit message and PR body to files in the scratchpad and pass those
+files in (avoid heredocs and inline multi-line strings). End commit messages and
+the PR body with the attribution lines the session's system reminder specifies.
+Then:
 
 ```bash
+git push -u origin <branch>
 gh pr create --title "<type>: <summary> (#<N>)" --body-file <path>
 ```
 
@@ -280,13 +315,15 @@ gh pr create --title "<type>: <summary> (#<N>)" --body-file <path>
   static checks that passed, how you verified it in the running app (what you
   exercised, and screenshots or output where useful, with no real family data in
   them), the test artifact used, whether the live artifact needs a publish after
-  merge, `Judgment calls`, and `Advisor review`. Write "none" for an empty
-  section rather than dropping it.
+  merge, `Judgment calls`, `Advisor review`, and `Self review` (filled in after
+  the loop below). Write "none" for an empty section rather than dropping it.
 - Never merge the PR. The user merges.
 - Never commit to `main` directly.
 
 Then read the PR's mergeable state and resolve any conflict yourself before
-reporting. A sibling merging while you worked is ordinary. After opening, bind
+reporting. A sibling merging while you worked is ordinary: merge `origin/main`
+into the branch (no rebase, no force-push), fix conflicts, rerun the static checks,
+and re-verify the behavior the conflict touched. After opening, bind
 the PR with the `ccd_pr` tools if the session has them (`get_status`, then
 `bind_pr`).
 
@@ -299,9 +336,11 @@ Once static checks pass, the PR is mergeable, and verification is done:
 2. Read the diff against the repository's own rules.
 3. Fix every finding that holds. Fixes owe the same static checks and, when they
    touch app code, a re-verification of the affected behavior on the test
-   artifact.
-4. Review the whole PR again, and repeat until a pass finds nothing. A skipped
-   finding counts as unresolved. Add a `Self review` section to the PR body.
+   artifact. A finding you decline needs a written reason in the `Self review`
+   section; a declined finding with no reason counts as unresolved.
+4. Review the whole PR again, and repeat until a pass finds nothing, up to three
+   passes. If the third pass still has findings, stop and report them to the
+   user instead of looping. Add the `Self review` section to the PR body.
 
 Nothing reaches the user as ready until a pass comes back clean on the current
 head.
@@ -310,7 +349,10 @@ head.
 
 Write down anything verification revealed that the repo does not already say: how
 the artifact runtime behaves, a limit on stored data, a browser quirk, a data
-shape that isn't obvious. Put it in project memory when it outlives the issue, or
+shape that isn't obvious. Update the `artifact-is-live-app` memory if this skill
+changes how publishing works (it should say: develop on the test artifact, publish
+live only on the user's say-so). Put other findings in project memory when they
+outlive the issue, or
 in a code comment beside the mechanism when a reader would need it. If it changes
 the data layout, update `artifact/README.md` in the same PR. A comment records the
 finding, never the session that taught it. Provenance goes on the issue.
@@ -325,7 +367,8 @@ running, say so.
 Say which artifact was used for testing, and whether the live one still needs a
 publish. Summarize what the plan review concluded and how many self-review passes
 ran and what they found. Close with the ready signal by adding a `Manual Review
-Needed` label (create it first if it does not exist, as in step 2) only when the
+Needed` label (create it first if it does not exist, with the same
+`gh label create` check as step 2) only when the
 PR is open, static checks pass, verification is done, and the self review ended
 clean.
 
