@@ -41,7 +41,8 @@ Feedback tab or the coach's `send_feedback` tool.
   color? green|yellow|orange, note?}] (nutrition per unit), weight, water (count of that day's waterUnit, default glass),
   active, steps, exercise (minutes), partial, meds (time the "Take morning meds" checklist task was ticked; hidden for anyone
   whose profile has hideMeds, set from Settings → Program)
-  and worklist (Leah only, Monday to Friday: time "Submit your daily list for work" was ticked)
+  opened (time they first opened the Today tab that day; check-ins only link to the checklist when it
+  and yesterday show no use) and worklist (Leah only, Monday to Friday: time "Submit your daily list for work" was ticked)
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
   A food with `recipe: {id, servings, items: [{item, qty, kcal, p, c, f}], at}` is a saved recipe (Today → Daily Log →
   My recipes, or the coach's `save_recipe` tool); its kcal/p/c/f are per serving, logging never overwrites them, and
@@ -67,8 +68,11 @@ in `artifact/photos/`); publish them with the Artifact `files` parameter.
   Only the artifact owner (Michael) gets the person switcher; any other account is tied to the person it first
   picks (never Michael) and opens straight to them. To re-link an account, delete its doc. This is an app-level
   lock, not a db access rule.
-- `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, error?}],
-  checkins [slot times already shown]
+- `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, error?, slot?, mentions?}],
+  checkins [slot times already shown]. At each check-in slot (07:53, 11:53, 17:53 local) the page has Claude
+  write a check-in from their progress, today's checklist and lesson, and saves it at once as a
+  `kind: "checkin"` message whose `mentions` (progress|checklist|lesson) keep each topic to once a day.
+  Messages may contain in-app links `[label](app:checklist|log|lesson)`, which render as buttons.
 
 Michael's history was seeded once from `data/app.db` (the Next.js app's import of the
 Cowork tracker log). The page never contains seed data.

@@ -173,6 +173,7 @@ details.day > summary::-webkit-details-marker { display: none; }
 .mwrap { display: grid; gap: 6px; max-width: 88%; }
 .mwrap.user { justify-self: end; justify-items: end; }
 .mwrap.bot { justify-self: start; justify-items: start; }
+.applink { display: inline; padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--link); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .mtime { font-size: 11px; line-height: 1; color: var(--ink-2); padding: 0 6px; margin-top: -2px; font-variant-numeric: tabular-nums; }
 .mwrap .msg { max-width: none; min-width: 0; touch-action: pan-y; transition: transform .18s, opacity .18s; }
 dialog.confirm { margin: auto; width: min(340px, calc(100vw - 32px)); padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
@@ -860,6 +861,8 @@ function choose(pid) {
   S.chat = { messages: [], checkins: [] };
   S.program = undefined;
   S.pending = null;
+  S.checkin = null;
+  S.loaded = new Set();
   store.set("sp.person", pid);
   setPersonColor(pid);
   applyLook(lookOf(S.prof));
@@ -877,6 +880,7 @@ function choose(pid) {
     S.days = {};
     for (const d of snap.docs) S.days[d.id] = { ...d.data(), date: d.id };
     renderAll();
+    firstLoad("days");
   }, err));
   S.unsub.push(S.db.doc(P("meta", "library")).onSnapshot((snap) => {
     S.library = (snap.exists && Array.isArray(snap.data().foods) ? snap.data().foods : []).map((f) => f && f.color === "red" ? { ...f, color: "orange" } : f);
@@ -885,6 +889,7 @@ function choose(pid) {
   S.unsub.push(S.db.doc(P("meta", "program")).onSnapshot((snap) => {
     S.program = snap.exists ? snap.data() : {};
     renderAll();
+    firstLoad("program");
   }, err));
   S.feedback = [];
   S.unsub.push(S.db.collection("feedback").where("pid", "==", pid).onSnapshot((snap) => {
@@ -894,6 +899,7 @@ function choose(pid) {
   S.unsub.push(S.db.doc(P("chat", S.today)).onSnapshot((snap) => {
     const d = snap.exists ? snap.data() : {};
     S.chat = { messages: Array.isArray(d.messages) ? d.messages : [], checkins: Array.isArray(d.checkins) ? d.checkins : [] };
+    S.loaded.add("chat");
     renderChat();
   }, err));
 
@@ -927,6 +933,8 @@ function setTab(id) {
   if (id === "settings") renderSettings();
   else if (S.prof) applyLook(lookOf(S.prof)); // drop any unsaved Appearance preview
   if (id === "feedback") renderFeedback();
+  // Notes that they looked at Today today, so check-ins only link to the checklist when they haven't lately.
+  if (id === "today" && S.pid && !S.days[S.today]?.opened && S.canWrite !== false) mutateDay(S.today, (x) => { if (x.opened) return false; x.opened = Date.now(); }).catch(() => {});
   renderAll();
   // Every tab opens at its top, except the coach, which opens at the latest message.
   if (id === "coach") requestAnimationFrame(() => scrollChat());
@@ -2508,7 +2516,7 @@ function taskRow({ ic, title, sub, done, meter, onclick, thumb, pop }) {
     onclick ? h("span", { class: "go", "aria-hidden": "true" }, "›") : null));
 }
 // The checklist for people without the lesson program (classic mode).
-function basicChecklist(d) {
+function basicTasks(d) {
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
   const W = waterPlan(), water = waterCount(S.days[S.today], W);
   let tasks = [
@@ -2520,17 +2528,16 @@ function basicChecklist(d) {
   ];
   tasks.push(stepsTask(d));
   tasks = tasks.filter(Boolean);
+  return tasks;
+}
+function basicChecklist(d) {
+  const tasks = basicTasks(d);
   const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
     h("div", { class: "phead", style: "margin-bottom:12px" }, h("h2", {}, "Today"), h("span", { class: "small muted num" }, `${n} of ${tasks.length} done`)),
     h("ul", { class: "tlist" }, tasks.map(taskRow)));
 }
-function programCard(d) {
-  if (!programOn()) return null;
-  if (S.program === undefined) return null;
-  ensureProgramStart();
-  prepareTodaysLesson();
-  const P0 = prog();
+function programTasks(d, P0) {
   const meals = ["Breakfast", "Lunch", "Dinner"].filter((m) => d.items.some((i) => String(i.meal).toLowerCase() === m.toLowerCase()));
   const W = waterPlan(), water = waterCount(S.days[S.today], W);
   let tasks = [
@@ -2546,6 +2553,15 @@ function programCard(d) {
   tasks.push(stepsTask(d));
   tasks.push(P0.goal ? { ic: "flag", title: "This week's goal", sub: P0.goal.text, done: true, onclick: openGoal } : { ic: "flag", title: "Set this week's goal", sub: P0.lastGoal ? "Look back at last week, then pick one small goal" : "One small, specific goal for the week", done: false, onclick: openGoal });
   tasks = tasks.filter(Boolean);
+  return tasks;
+}
+function programCard(d) {
+  if (!programOn()) return null;
+  if (S.program === undefined) return null;
+  ensureProgramStart();
+  prepareTodaysLesson();
+  const P0 = prog();
+  const tasks = programTasks(d, P0);
   const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
     h("div", { class: "banner" }, photoImg(weekPhoto(P0, P0.week)),
@@ -3197,36 +3213,150 @@ function renderFeedbackList() {
 }
 
 // ---------- check-ins ----------
-const CHECKIN_SEEN = new Map();
-function composeCheckin() {
+// ---------- check-ins ----------
+// The coach opens each check-in slot (morning, midday, evening) with a message written for that day from
+// their progress, today's checklist and lesson. Each topic comes up at most once a day (saved on the
+// message as `mentions`), and the checklist and lesson get a tappable link only when they haven't been
+// using them lately. The message is saved to the chat as soon as it's written.
+function mentionedToday() {
+  const said = new Set();
+  for (const m of S.chat.messages) if (m.kind === "checkin") for (const k of m.mentions || []) said.add(k);
+  return said;
+}
+const lessonDoneOn = (date) => Object.values(S.program?.done || {}).some((v) => v?.date === date);
+// Used the Today tab today or yesterday: opened it, or ticked something only it offers.
+function usesChecklist() {
+  return [S.today, addDays(S.today, -1)].some((date) => { const x = S.days[date] || {}; return !!(x.opened || x.meds || x.worklist || waterOz(x) > 0 || lessonDoneOn(date)); });
+}
+function progressFacts() {
+  const p = S.prof, L = [];
+  const weights = Object.values(S.days).filter((x) => x.weight != null).sort((a, b) => a.date.localeCompare(b.date));
+  const lw = weights.at(-1), start = Number(p.startWeight) || weights[0]?.weight, goal = Number(p.goalWeight) || null;
+  if (lw && start) {
+    const lost = r1(start - lw.weight);
+    let t = `Weight: started at ${start} lb${p.startDate ? ` on ${p.startDate}` : ""}, latest ${lw.weight} lb on ${lw.date} (${lost > 0 ? `down ${lost} lb` : lost < 0 ? `up ${-lost} lb` : "no change yet"})`;
+    if (goal && start > goal) t += `, goal ${goal} lb: ${r1(Math.max(0, lw.weight - goal))} lb to go, ${Math.max(0, Math.min(100, Math.round(((start - lw.weight) / (start - goal)) * 100)))}% of the way there`;
+    const wk = [...weights].reverse().find((x) => x.date <= addDays(lw.date, -6));
+    if (wk) t += `. Over the past week or so: ${r1(lw.weight - wk.weight) <= 0 ? `down ${r1(wk.weight - lw.weight)}` : `up ${r1(lw.weight - wk.weight)}`} lb since ${wk.date}`;
+    L.push(t + ".");
+  } else if (goal) L.push(`Goal weight: ${goal} lb. No weigh-ins logged yet.`);
+  const y = dayView(addDays(S.today, -1));
+  if (y.items.length) L.push(`Yesterday: ${fmt(y.cal)} cal eaten${y.target != null ? ` of a ${fmt(y.target)} target (${Math.abs(y.target - y.cal) <= 150 ? "right on target" : y.cal < y.target ? "under" : "over"})` : ""}, protein ${y.p} g, ${new Set(y.items.map((i) => i.meal)).size} meals or snacks logged.`);
+  else L.push("Yesterday: nothing logged.");
+  let streak = 0;
+  for (let i = 1; i < 60 && (S.days[addDays(S.today, -i)]?.items || []).length; i++) streak++;
+  if (streak >= 2) L.push(`Logging streak: food logged ${streak} days in a row.`);
+  if (p.activity && y.steps != null) L.push(`Steps yesterday: ${fmt(y.steps)} of a ${fmt(Number(p.stepGoal) || 6000)} goal.`);
+  if (p.bigPicture) L.push(`Their reason for doing this, in their words: ${p.bigPicture}`);
+  return L;
+}
+function checkinPlan() {
   const now = clockIn(tz());
   const slotTime = [...CHECKIN_TIMES].reverse().find((t) => t <= now);
   if (!slotTime || S.chat.checkins.includes(slotTime)) return null;
   const slot = slotTime < "10:00" ? "morning" : slotTime < "15:00" ? "midday" : "evening";
   const d = dayView(S.today), y = dayView(addDays(S.today, -1));
   const has = (day, meal) => day.items.some((i) => i.meal.toLowerCase() === meal.toLowerCase());
+  const askedWeigh = S.chat.messages.some((m) => m.role === "assistant" && /weigh|scale/i.test(m.text || ""));
   const asks = [];
   if (slot === "morning") {
-    const needW = d.weight == null, needB = !has(d, "Breakfast");
-    if (!needW && !needB) return null;
-    if (needW) asks.push("Did you weigh yourself this morning? If so, what was it?");
+    const needB = !has(d, "Breakfast");
+    if (d.weight == null && !askedWeigh) asks.push("Did you weigh yourself this morning? If so, what was it?");
     if (needB && has(y, "Dinner") && !has(y, "Evening Snack")) asks.push("Did you eat anything after dinner last night?");
     if (needB) asks.push("What did you have for breakfast?");
   } else if (slot === "midday") {
-    if (has(d, "Lunch")) return null;
-    asks.push(has(d, "Morning Snack") ? "What did you have for lunch?" : "What did you have for a morning snack (if anything) and lunch?");
-  } else {
-    if (has(d, "Dinner")) return null;
-    asks.push(has(d, "Afternoon Snack") ? "What did you have for dinner?" : "What did you have for an afternoon snack (if anything) and dinner?");
+    if (!has(d, "Lunch")) asks.push(has(d, "Morning Snack") ? "What did you have for lunch?" : "What did you have for a morning snack (if anything) and lunch?");
+  } else if (!has(d, "Dinner")) asks.push(has(d, "Afternoon Snack") ? "What did you have for dinner?" : "What did you have for an afternoon snack (if anything) and dinner?");
+
+  const said = mentionedToday(), topics = [];
+  if (!said.has("progress")) topics.push({ k: "progress", facts: progressFacts() });
+  if (!said.has("checklist")) {
+    const tasks = programOn() && S.program !== undefined ? programTasks(d, prog()) : basicTasks(d);
+    const todo = tasks.filter((t) => !t.done && t.ic !== "book");
+    topics.push({ k: "checklist", link: !usesChecklist(), facts: [`Today's daily checklist: ${tasks.filter((t) => t.done).length} of ${tasks.length} done.${todo.length ? ` Still to do: ${todo.map((t) => t.title).join(", ")}.` : ""}`] });
   }
-  const hello = { morning: "Good morning", midday: "Hi", evening: "Good evening" }[slot];
-  const target = d.target;
-  const status = target == null ? "" : `\n\nSo far today: ${fmt(d.cal)} of ${fmt(target)} cal, ${fmt(target - d.cal)} left.`;
-  const lead = S.prof.mode === "noom" ? `${hello}, ${S.prof.name}. Quick check-in when you have a minute.` : `${hello}, ${S.prof.name}.`;
-  // When it first appeared, so its time doesn't tick forward on every render; saved with the check-in.
-  const seen = `${S.pid}/${S.today}/${slotTime}`;
-  if (!CHECKIN_SEEN.has(seen)) CHECKIN_SEEN.set(seen, Date.now());
-  return { slot: slotTime, text: `${lead} ${asks.join(" ")}${status}`, at: CHECKIN_SEEN.get(seen) };
+  if (programOn() && S.program !== undefined && !said.has("lesson")) {
+    const P0 = prog();
+    if (P0.next) topics.push({ k: "lesson", link: !lessonDoneOn(S.today) && !lessonDoneOn(addDays(S.today, -1)),
+      facts: [`Today's lesson: "${P0.next.title || "Today's lesson"}" (about 5 minutes, week ${P0.week}: ${P0.theme})${P0.behind > 1 ? `. ${P0.behind - 1} more waiting to catch up on` : ""}.`] });
+    else if (P0.doneToday.length) topics.push({ k: "lesson", facts: [`They already finished today's lesson ("${P0.doneToday[0].title || "Today's lesson"}").`] });
+  }
+  if (!asks.length && !topics.length) return null;
+  return { slot: slotTime, part: slot, asks, topics, status: d.target != null && d.cal > 0 ? `So far today: ${fmt(d.cal)} of ${fmt(d.target)} cal, ${fmt(d.target - d.cal)} left.` : "" };
+}
+const APP_LINKS = { checklist: "[Daily Checklist](app:checklist)", lesson: "[today's lesson](app:lesson)" };
+// Plain fallback when Claude can't write it.
+function checkinFallback(plan) {
+  const hello = { morning: "Good morning", midday: "Hi", evening: "Good evening" }[plan.part];
+  const L = [`${hello}, ${S.prof.name}.`];
+  for (const t of plan.topics) {
+    if (t.k === "progress") {
+      const lw = latestWeight(), start = Number(S.prof.startWeight);
+      if (lw && start && start - lw.weight >= 0.5) L.push(`You're down ${r1(start - lw.weight)} lb so far. Nice work!`);
+    }
+    if (t.k === "checklist") L.push(t.link ? `Your ${APP_LINKS.checklist} has today's small steps waiting.` : "");
+    if (t.k === "lesson" && t.link) L.push(`There's a short new lesson for you: ${APP_LINKS.lesson}.`);
+  }
+  return [L.filter(Boolean).join(" "), plan.asks.join(" "), plan.status].filter(Boolean).join("\n\n");
+}
+async function writeCheckin(plan) {
+  if (!S.sample) return null;
+  const p = S.prof, first = String(p.name || "").split(" ")[0];
+  const when = new Intl.DateTimeFormat("en-US", { timeZone: tz(), weekday: "long", month: "long", day: "numeric" }).format(new Date());
+  const parts = [];
+  for (const t of plan.topics) {
+    if (t.k === "progress") parts.push("PROGRESS: one specific, encouraging observation about their progress toward their own goal, using the facts below. Celebrate real wins (a drop, a streak, a day on target); if things are flat or up, be kind and look forward. Never invent numbers, never shame.");
+    if (t.k === "checklist") parts.push(`CHECKLIST: one short sentence about today's daily checklist (what's left, or a nudge to start it)${t.link ? `. They haven't been using it lately, so include this link exactly as written, inside the sentence: ${APP_LINKS.checklist}` : ". No link."}`);
+    if (t.k === "lesson") parts.push(`LESSON: one short sentence about today's lesson, naming it${t.link ? ` and making it sound worth five minutes. They haven't done one lately, so include this link exactly as written: ${APP_LINKS.lesson}` : ". No link."}`);
+  }
+  if (plan.asks.length) parts.push(`QUESTIONS, last, as their own paragraph (light rewording is fine, keep each one): ${plan.asks.join(" ")}`);
+  const prompt = `You write one check-in message that the coach in a family weight loss app sends to ${first} to open the ${plan.part} (${when}). It shows in the chat as the coach's message.
+
+${coachPrefs(p)}
+${p.mode === "noom" ? NOOM : CLASSIC}
+
+Cover only these, in this order, and nothing else:
+${parts.map((x, i) => `${i + 1}. ${x}`).join("\n")}
+
+Rules: greet them by first name once. Two to five short sentences in one to three short paragraphs. Plain text; **bold** at most once; no headings or lists. Vary the wording from day to day; don't open with "Quick check-in". Don't mention medications, weighing (unless it's in the questions) or anything not listed. Only use the links given, written exactly.
+
+FACTS
+${plan.topics.flatMap((t) => t.facts).join("\n")}
+
+Reply with only the message.`;
+  const res = await Promise.race([S.sample(prompt, { modelTier: "quick", cache: false }), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 20000))]);
+  let text = String(res?.text || "").trim().slice(0, 1200);
+  if (!text) return null;
+  // Keep only the links offered; add one back if it was dropped.
+  text = text.replace(/\[([^\]\n]{1,40})\]\(app:([a-z]+)\)/g, (all, label, k) => (plan.topics.some((t) => t.k === k && t.link) ? all : label));
+  const paras = text.split(/\n{2,}/), at = plan.asks.length && paras.length > 1 ? paras.length - 1 : paras.length;
+  for (const t of plan.topics) if (t.link && !text.includes(`(app:${t.k})`)) paras.splice(at, 0, t.k === "checklist" ? `Here's your ${APP_LINKS.checklist}.` : `When you have five minutes: ${APP_LINKS.lesson}.`);
+  text = paras.join("\n\n");
+  return plan.status ? `${text}\n\n${plan.status}` : text;
+}
+const CHECKIN_DONE = new Set();
+let checkinJob = null;
+// The check-in waits until this person's days, program and today's chat have all loaded, so it's
+// written from their real data. The first load of each re-renders the chat to start it.
+function firstLoad(k) { if (S.loaded.has(k)) return; S.loaded.add(k); renderChat(); }
+function ensureCheckin() {
+  if (S.busy || checkinJob || !S.pid || !["days", "program", "chat"].every((k) => S.loaded?.has(k))) return;
+  const plan = checkinPlan();
+  if (!plan) return;
+  const key = `${S.pid}/${S.today}/${plan.slot}`;
+  if (CHECKIN_DONE.has(key)) return;
+  checkinJob = key;
+  (async () => {
+    const text = (await writeCheckin(plan).catch(() => null)) || checkinFallback(plan);
+    if (`${S.pid}/${S.today}/${plan.slot}` !== key) return; // switched person or the day rolled over
+    const msg = { role: "assistant", kind: "checkin", slot: plan.slot, text, at: Date.now(), mentions: plan.topics.map((t) => t.k) };
+    CHECKIN_DONE.add(key);
+    if (S.canWrite === false) { S.checkin = msg; return; }
+    try {
+      await mutateChat(S.today, (c) => { if (c.checkins.includes(plan.slot)) return false; c.checkins.push(plan.slot); c.messages.push(msg); });
+      S.checkin = null;
+    } catch { S.checkin = msg; }
+  })().finally(() => { checkinJob = null; renderChat(); });
 }
 
 // ---------- coach: prompt ----------
@@ -3308,6 +3438,7 @@ QUESTIONS AND COACHING
 
 SAFETY
 - Never suggest eating below the calorie target's floor or skipping meals to make up for a big day.
+- MEAL SIZES: the daily target is what counts, and it's meant to be eaten. Use the healthy meal-size ranges in the app data. If they set or mention a per-meal limit (like "no more than 300 calories a meal") that would leave them well under their daily target, don't praise or adopt it and never call a meal "over" by it. Kindly say their target already has the loss built in, that eating far below it tends to backfire (hunger, low energy, lost muscle, rebounds), and offer the range for that meal instead. Judge a meal by the day as a whole: a bigger breakfast on an on-track day is fine.
 - If weight is dropping faster than 1% of body weight per week for several weeks, say so and suggest easing off.
 - No medical advice beyond general guidance. For medications, conditions, pregnancy, or symptoms like dizziness or chest pain, point them to their doctor.
 - If they describe bingeing and purging, fear of eating, or other signs of disordered eating, respond with care, stop focusing on numbers, and encourage talking to a doctor or the NEDA helpline.`;
@@ -3358,6 +3489,8 @@ function context(message) {
       ? `Calorie target: base ${fmt(d.base)} per day, plus ${Math.round((p.eatBackPct ?? 0.5) * 100)}% of that day's ${S.pid === "michael" ? "Apple Watch " : "logged "}active calories (never resting calories).${z ? ` Today's zone: ${fmt(z.low)} to ${fmt(z.high)}.` : ""} Recalculate after about every 20 lb lost.`
       : `Calorie target: ${fmt(d.base)} per day${z ? ` (zone ${fmt(z.low)} to ${fmt(z.high)})` : ""}. Activity is not tracked, so there is no eat-back.`);
     L.push(`Today so far: ${fmt(d.cal)} eaten of ${fmt(d.target)}, ${fmt(d.target - d.cal)} left. Protein ${d.p} g.`);
+    { const r = (a, b) => `${fmt(Math.round((d.base * a) / 25) * 25)} to ${fmt(Math.round((d.base * b) / 25) * 25)}`;
+      L.push(`Healthy meal sizes for their ${fmt(d.base)} target: breakfast ${r(0.2, 0.3)}, lunch ${r(0.25, 0.35)}, dinner ${r(0.25, 0.35)}, snacks ${r(0.1, 0.2)} for the day in all. Use these, not a stricter per-meal limit.`); }
     if (y.items.length) L.push(`Yesterday: ${fmt(y.cal)} eaten of ${fmt(y.target ?? y.base)}${p.activity && y.active != null ? ` (active ${fmt(y.active)} cal${y.partial ? ", partial" : ""})` : ""}. Meals: ${[...new Set(y.items.map((i) => i.meal))].join(", ")}.`);
   } else {
     L.push("No calorie target is set up yet. Log food and weight normally and don't invent a target. Suggest they fill in Settings in the app when it comes up naturally.");
@@ -3741,9 +3874,19 @@ function coachTools(chip) {
 
 // ---------- coach: UI ----------
 let coachEls = null;
+function openAppLink(k) {
+  if (k === "log") return setViewSec("today", "log");
+  setViewSec("today", "check");
+  if (k === "lesson" && programOn() && S.program !== undefined) { const P0 = prog(); if (P0.next) openLesson(P0.next.n); else openLessonList(); }
+}
 function formatted(text) {
   const frag = document.createDocumentFragment();
-  const inline = (s) => s.split(/(\*\*[^*]+\*\*)/g).map((part) => (part.startsWith("**") && part.endsWith("**") && part.length > 4 ? h("strong", {}, part.slice(2, -2)) : part));
+  const bold = (s) => s.split(/(\*\*[^*]+\*\*)/g).map((part) => (part.startsWith("**") && part.endsWith("**") && part.length > 4 ? h("strong", {}, part.slice(2, -2)) : part));
+  // [label](app:checklist|log|lesson) becomes a button that opens that part of the app.
+  const inline = (s) => s.split(/(\[[^\]\n]{1,40}\]\(app:(?:checklist|log|lesson)\))/g).flatMap((part) => {
+    const m = part.match(/^\[([^\]\n]{1,40})\]\(app:(checklist|log|lesson)\)$/);
+    return m ? [h("button", { type: "button", class: "applink", onclick: () => openAppLink(m[2]) }, m[1])] : bold(part);
+  });
   // Within a paragraph, runs of bullet or numbered lines become a list and the other lines a paragraph,
   // so "- a\n- b\nTotal: …" renders as a list followed by text.
   const UL = /^\s*[-*•]\s+/, OL = /^\s*\d+[.)]\s+/;
@@ -3908,9 +4051,10 @@ function renderChat() {
     kids.push(chatRow("bot", h("div", { class: "msg bot" },
       h("p", {}, `Hi ${S.prof.name}. Tell me what you ate, send a photo of your plate or a label, log your weight, or ask how things are going.`))));
   }
-  const ci = !S.busy && composeCheckin();
-  S.checkin = ci || null;
-  if (ci) kids.push(chatRow("bot", h("div", { class: "mwrap bot" }, bubble({ role: "assistant", kind: "checkin", slot: ci.slot, text: ci.text }), msgTime(ci.at))));
+  ensureCheckin();
+  if (S.checkin && S.chat.checkins.includes(S.checkin.slot)) S.checkin = null;
+  if (checkinJob === `${S.pid}/${S.today}/${checkinPlan()?.slot}`) kids.push(chatRow("bot", h("div", { class: "msg bot" }, h("p", { class: "typing" }, "Typing…"))));
+  else if (S.checkin) kids.push(chatRow("bot", h("div", { class: "mwrap bot" }, bubble(S.checkin), msgTime(S.checkin.at))));
   if (S.pending) kids.push(S.pending.el);
   coachEls.list.replaceChildren(...kids);
   fitHint(composerHint());
@@ -4024,7 +4168,7 @@ async function sendMessage(over) {
   }
   try {
     await mutateChat(date, (c) => {
-      if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", slot: checkin.slot, text: checkin.text, at: Math.min(checkin.at || Infinity, userMsg.at - 1, Date.now() - 1) }); }
+      if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", slot: checkin.slot, text: checkin.text, mentions: checkin.mentions || [], at: Math.min(checkin.at || Infinity, userMsg.at - 1) }); }
       c.messages.push(userMsg);
       if (c.messages.length > 200) c.messages.splice(0, c.messages.length - 200);
     });
