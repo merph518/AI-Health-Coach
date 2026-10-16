@@ -80,7 +80,8 @@ Cowork tracker log). The page never contains seed data.
 
 ## Updating
 
-Edit `coach.html`, then ask Claude Code to publish it to the URL above (Artifact publish
+Edit `coach.html`, run `npm run lint:artifact` (scripts/lint-artifact.mjs: a syntax check plus app rules, such as
+every chat message showing its time), then ask Claude Code to publish it to the URL above (Artifact publish
 with `url`, so the link and data stay the same).
 
 ## Apple Health (Michael only)

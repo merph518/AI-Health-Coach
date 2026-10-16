@@ -1059,7 +1059,13 @@ function setWhoButton() {
   who.replaceChildren(personAvatar(S.pid, "sm"), String(S.prof.name || S.pid), ...(S.owner ? [h("span", { class: "faint", "aria-hidden": "true" }, " ▾")] : []));
 }
 function refreshAvatars() { if (!S.pid) return; setWhoButton(); renderChat(); }
-function chatRow(role, el) { return h("div", { class: `mrow ${role}` }, role === "user" ? personAvatar(S.pid) : coachAvatar(), el); }
+// Every chat row carries its time (`at`, ms) under the bubble; scripts/lint-artifact.mjs checks each call passes one.
+function chatRow(role, el, at) {
+  return h("div", { class: `mrow ${role}` }, role === "user" ? personAvatar(S.pid) : coachAvatar(), h("div", { class: `mwrap ${role}` }, el, msgTime(at)));
+}
+// When a row that isn't a saved message (welcome, typing, notices) first appeared, so its time holds still across renders.
+const firstSeen = new Map();
+const seenAt = (key) => { if (!firstSeen.has(key)) firstSeen.set(key, Date.now()); return firstSeen.get(key); };
 
 function LB() { return h("em", { class: "unit" }, "lb"); }
 function CAL() { return h("em", { class: "unit" }, "cal"); }
@@ -4036,7 +4042,6 @@ function msgTime(ms) {
 // A saved message: swipe it sideways (touch) and confirm to remove it from the chat log.
 function savedBubble(m) {
   const b = bubble(m);
-  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, b, msgTime(m.at));
   const ask = async () => {
     if (S.busy || document.querySelector("dialog.confirm")) return;
     const ok = await confirmPopup("Are you sure you want to delete this message?", snippet(m.text) || (m.photo ? "📷 Photo" : ""), "Delete");
@@ -4062,7 +4067,7 @@ function savedBubble(m) {
   });
   b.addEventListener("pointerup", () => { const go = horiz && Math.abs(dx) > 80; reset(); if (go) ask(); });
   b.addEventListener("pointercancel", reset);
-  return chatRow(m.role === "user" ? "user" : "bot", wrap);
+  return chatRow(m.role === "user" ? "user" : "bot", b, m.at);
 }
 // An alert-style popup centered over the page. Resolves true only on the confirm button;
 // Cancel, Escape or a tap outside resolve false.
@@ -4158,16 +4163,16 @@ function renderChat() {
   const kids = S.chat.messages.map(savedBubble);
   if (isBirthday(S.prof, S.today)) kids.unshift(chatRow("bot", h("div", { class: "msg bot bday" },
     h("p", {}, `🎂 Happy birthday, ${String(S.prof.name || "").split(" ")[0]}! 🎉`),
-    h("p", {}, "Enjoy your day. Have the cake, log it if you like, and don't worry about the numbers. One day never undoes your progress."))));
+    h("p", {}, "Enjoy your day. Have the cake, log it if you like, and don't worry about the numbers. One day never undoes your progress.")), seenAt(`bday:${S.pid}:${S.today}`)));
   if (needsOnboarding()) kids.unshift(onboardingCard());
   if (!kids.length && !S.pending) {
     kids.push(chatRow("bot", h("div", { class: "msg bot" },
-      h("p", {}, `Hi ${S.prof.name}. Tell me what you ate, send a photo of your plate or a label, log your weight, or ask how things are going.`))));
+      h("p", {}, `Hi ${S.prof.name}. Tell me what you ate, send a photo of your plate or a label, log your weight, or ask how things are going.`)), seenAt(`hi:${S.pid}:${S.today}`)));
   }
   ensureCheckin();
   if (S.checkin && S.chat.checkins.includes(S.checkin.slot)) S.checkin = null;
-  if (checkinJob === `${S.pid}/${S.today}/${checkinPlan()?.slot}`) kids.push(chatRow("bot", h("div", { class: "msg bot" }, h("p", { class: "typing" }, "Typing…"))));
-  else if (S.checkin) kids.push(chatRow("bot", h("div", { class: "mwrap bot" }, bubble(S.checkin), msgTime(S.checkin.at))));
+  if (checkinJob === `${S.pid}/${S.today}/${checkinPlan()?.slot}`) kids.push(chatRow("bot", h("div", { class: "msg bot" }, h("p", { class: "typing" }, "Typing…")), seenAt(`typing:${checkinJob}`)));
+  else if (S.checkin) kids.push(chatRow("bot", bubble(S.checkin), S.checkin.at));
   if (S.pending) kids.push(S.pending.el);
   // A message left without a reply (the page closed mid-answer, or it was stopped) gets a way to ask again.
   const last = S.chat.messages.at(-1);
@@ -4180,7 +4185,7 @@ function noReplyRow(m) {
   return chatRow("bot", h("div", { class: "msg bot" },
     h("p", { class: "small muted", style: "margin:0 0 8px" }, "No reply came back for this one. The page may have closed while the coach was answering." +
       (m.photo ? " The photo wasn't kept, so send it again if the coach needs to see it." : "")),
-    h("button", { class: "btn", type: "button", onclick: () => sendMessage({ text: m.text || "Here's a photo.", retry: m.at, photoLost: !!m.photo }) }, "Try again")));
+    h("button", { class: "btn", type: "button", onclick: () => sendMessage({ text: m.text || "Here's a photo.", retry: m.at, photoLost: !!m.photo }) }, "Try again")), seenAt(`noreply:${S.pid}:${m.at}`));
 }
 // The composer's placeholder answers the last thing the coach said: its question, the
 // check-in on screen, or else the meal that's due.
@@ -4281,7 +4286,7 @@ async function sendMessage(over) {
   const chips = [];
   const body = h("div", {}, h("p", { class: "typing" }, "Thinking…"));
   const chipBox = h("div", { class: "chips", hidden: true });
-  S.pending = { el: chatRow("bot", h("div", { class: "msg bot" }, chipBox, body)) };
+  S.pending = { el: chatRow("bot", h("div", { class: "msg bot" }, chipBox, body), Date.now()) };
   const chip = (label) => { chips.push(label); chipBox.hidden = false; chipBox.append(h("span", {}, "✓ " + label)); over?.chip?.(label); };
 
   if (!over) {

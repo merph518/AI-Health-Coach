@@ -10,7 +10,8 @@
     "typecheck": "next typegen && tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "setup:users": "tsx scripts/setup-users.ts",
-    "import": "tsx scripts/import-tracker.ts"
+    "import": "tsx scripts/import-tracker.ts",
+    "lint:artifact": "node scripts/lint-artifact.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
