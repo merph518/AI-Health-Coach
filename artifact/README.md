@@ -71,7 +71,7 @@ in `artifact/photos/`); publish them with the Artifact `files` parameter.
 - `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, error?, slot?, mentions?}],
   checkins [slot times already shown]. At each check-in slot (07:53, 11:53, 17:53 local) the page has Claude
   write a check-in from their progress, today's checklist and lesson, and saves it at once as a
-  `kind: "checkin"` message whose `mentions` (progress|checklist|lesson) keep each topic to once a day.
+  `kind: "checkin"` message whose `mentions` (progress|checklist|lesson|goal, the last a question about this week's goal from the day after it was set) keep each topic to once a day.
   Messages may contain in-app links `[label](app:checklist|log|lesson)`, which render as buttons.
 
 Michael's history was seeded once from `data/app.db` (the Next.js app's import of the

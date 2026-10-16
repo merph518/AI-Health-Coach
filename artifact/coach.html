@@ -3282,6 +3282,11 @@ function checkinPlan() {
       facts: [`Today's lesson: "${P0.next.title || "Today's lesson"}" (about 5 minutes, week ${P0.week}: ${P0.theme})${P0.behind > 1 ? `. ${P0.behind - 1} more waiting to catch up on` : ""}.`] });
     else if (P0.doneToday.length) topics.push({ k: "lesson", facts: [`They already finished today's lesson ("${P0.doneToday[0].title || "Today's lesson"}").`] });
   }
+  // This week's goal (Noom-style): ask how it's going once a day, starting the day after it was set.
+  if (programOn() && S.program !== undefined && !said.has("goal")) {
+    const g = prog().goal;
+    if (g?.text && (!g.at || dateIn(tz(), new Date(g.at)) < S.today)) topics.push({ k: "goal", facts: [`This week's goal, in their words: "${String(g.text).slice(0, 300)}"${g.at ? ` (set ${dateIn(tz(), new Date(g.at))})` : ""}.`] });
+  }
   if (!asks.length && !topics.length) return null;
   return { slot: slotTime, part: slot, asks, topics, status: d.target != null && d.cal > 0 ? `So far today: ${fmt(d.cal)} of ${fmt(d.target)} cal, ${fmt(d.target - d.cal)} left.` : "" };
 }
@@ -3296,6 +3301,7 @@ function checkinFallback(plan) {
       const lw = latestWeight(), start = Number(S.prof.startWeight);
       if (lw && start && start - lw.weight >= 0.5) L.push(`You're down ${r1(start - lw.weight)} lb so far. Nice work!`);
     }
+    if (t.k === "goal") L.push(`How's your goal for this week going: "${String(prog().goal?.text || "").slice(0, 120)}"?`);
     if (t.k === "checklist") L.push(t.link ? `Your ${APP_LINKS.checklist} has today's small steps waiting.` : "");
     if (t.k === "lesson" && t.link) L.push(`Today's lesson is ${topicLink(t)}, about five minutes.`);
   }
@@ -3311,6 +3317,8 @@ async function writeCheckin(plan) {
     if (t.k === "checklist") parts.push(`CHECKLIST: one short sentence about today's daily checklist (what's left, or a nudge to start it)${t.link ? `. They haven't been using it lately, so include this link exactly as written, inside the sentence: ${APP_LINKS.checklist}` : ". No link."}`);
     if (t.k === "lesson") parts.push(`LESSON: one short sentence about today's lesson${t.link ? ` that makes it sound worth five minutes. They haven't done one lately, so name it with this link, exactly as written and in place of the title (the link text is the title; don't also write the title): ${topicLink(t)}` : ", naming it. No link."}`);
   }
+  const goal = plan.topics.find((t) => t.k === "goal");
+  if (goal) parts.push(`WEEKLY GOAL: one warm, specific question about how this week's goal is going (see FACTS), worded for the ${plan.part} (a bedtime or evening goal in the morning: ask about last night). Curious, never a scolding. Put it with the questions${plan.asks.length ? "" : " at the end"}.`);
   if (plan.asks.length) parts.push(`QUESTIONS, last, as their own paragraph (light rewording is fine, keep each one): ${plan.asks.join(" ")}`);
   const prompt = `You write one check-in message that the coach in a family weight loss app sends to ${first} to open the ${plan.part} (${when}). It shows in the chat as the coach's message.
 
