@@ -35,9 +35,11 @@ issue 214. If no number was supplied, ask for one. Do not guess from open issues
   open its PR (never to merge). Commits need no asking (`CLAUDE.md`).
 - Scratch files (commit message, PR body) go in the session scratchpad, never in
   the worktree. Stage files by name, not `git add -A`.
-- Every stop below (closed issue, blocked by another session, a question to the
-  user, abandoned work) must first remove the `In Progress` label if this session
-  added it, and read the removal back.
+- Every stop before work starts (closed issue, blocked by another session) must
+  first remove the `In Progress` label if this session added it, and read the
+  removal back. Once a branch with commits exists, keep the label through a
+  question to the user, and remove it only if the work is abandoned (say so on the
+  issue).
 
 ## Operating principles
 
@@ -69,8 +71,8 @@ gh issue view <N> --json number,title,state,labels,body,comments,assignees
 - Read the comments as well as the body. Requirements get revised there.
 - Closed issue: stop and ask.
 - Already labeled `In Progress`: another session may own it. Look for an open PR
-  or branch for it (`gh pr list --search "#<N>"`, `git ls-remote --heads origin`).
-  If one exists, do not open a second branch; report who holds it and stop. If
+  that closes it (`gh pr list --state open --search "closes #<N>"`) or a branch
+  named for it (`git ls-remote --heads origin "*issue-<N>-*"`). If one exists, do not open a second branch; report who holds it and stop. If
   nothing exists, the label may be stale: say so, ask the user, and do not
   proceed on a guess.
 - Tracking issue (a table of child issues with no acceptance criteria of its
@@ -91,14 +93,13 @@ No branch is cut and no file edited until the label is read back on the issue.
 The label claims the issue against other concurrent sessions.
 
 ```bash
-gh label list --limit 100 --json name --jq '.[].name' | grep -qx "In Progress" \
-  || gh label create "In Progress" --color FBCA04 --description "A session is working this issue"
+gh label create "In Progress" --force --color FBCA04 --description "A session is working this issue"
 gh issue edit <N> --add-label "In Progress"
 gh issue view <N> --json labels --jq '[.labels[].name] | join(", ")'
 ```
 
-Create the label only when it does not exist yet. If the edit still fails, fix
-that before going on.
+`--force` creates the label, or resets its color and description if it exists. If the edit still
+fails, fix that before going on.
 
 ## 3. Branch in an isolated worktree
 
@@ -138,8 +139,8 @@ worktree on a clean branch with no commits beyond `origin/main`, rename that
 branch (`git branch -m`) instead of making another. Start every shell call with
 `cd <worktree> &&`, because the working directory can silently reset. If
 `node_modules` is not present in the worktree or an ancestor, run `npm ci` before
-any `npm run`. If a check passes but the symbols you just added
-cannot be found, you ran against the wrong tree.
+any `npm run`. If a check passes but the symbols you just added cannot be found,
+you ran against the wrong tree.
 
 Verify the base is clean: `git log --oneline origin/main..HEAD` prints nothing.
 
@@ -210,8 +211,8 @@ published, not just to files on disk.
   stored data. The profiles hold health data for real people (weights, birth
   dates, photos); never copy it into the repo, a PR body, an issue comment, or a
   screenshot. Check what the page exposes to anyone who can open the link.
-- Check sharing after any publish: a private artifact must stay private unless
-  the issue says otherwise.
+- Check sharing after any publish: a private artifact must stay private. Only the
+  user, in chat, can change who it is shared with.
 - Do not delete or unpublish an artifact unless the user asked for that exact
   one.
 
@@ -237,8 +238,10 @@ artifact.
 
 Declare the live page's capabilities (`artifact/README.md`) **except `mcp`**. The
 Gmail tools include `trash_message`, and exercising the Apple Health import from a
-test page signed in as Michael would trash his real emails. If the change needs
-the import path, stop and ask instead.
+test page signed in as Michael would trash his real emails. Without `mcp` the
+page's Gmail calls throw (`mcp` is undefined there), so the import tool failing on
+the test artifact is expected: do not exercise it, and do not patch the page to
+tolerate it. If the change needs the import path, stop and ask instead.
 
 The test artifact's database starts empty, and live rows must never be copied
 into it. To check that existing data still loads, create fake rows in the old
@@ -296,8 +299,8 @@ Gates, all required before `gh pr create`:
 2. Re-read the board from step 3. If an open PR touches a file or artifact you
    changed, name it in your PR body so whoever merges second knows what they are
    resolving.
-3. `git diff origin/main...HEAD` shows no comment, UI string, or log line carrying a tracker number,
-   run ID, or assistant name.
+3. `git diff origin/main...HEAD` shows no comment, UI string, or log line
+   carrying a tracker number, run ID, or assistant name.
 4. No secrets or personal data in the diff or in the published page.
 
 Write the commit message and PR body to files in the scratchpad and pass those
@@ -349,10 +352,7 @@ head.
 
 Write down anything verification revealed that the repo does not already say: how
 the artifact runtime behaves, a limit on stored data, a browser quirk, a data
-shape that isn't obvious. Update the `artifact-is-live-app` memory if this skill
-changes how publishing works (it should say: develop on the test artifact, publish
-live only on the user's say-so). Put other findings in project memory when they
-outlive the issue, or
+shape that isn't obvious. Put it in project memory when it outlives the issue, or
 in a code comment beside the mechanism when a reader would need it. If it changes
 the data layout, update `artifact/README.md` in the same PR. A comment records the
 finding, never the session that taught it. Provenance goes on the issue.
@@ -366,16 +366,18 @@ running, say so.
 
 Say which artifact was used for testing, and whether the live one still needs a
 publish. Summarize what the plan review concluded and how many self-review passes
-ran and what they found. Close with the ready signal by adding a `Manual Review
-Needed` label (create it first if it does not exist, with the same
-`gh label create` check as step 2) only when the
-PR is open, static checks pass, verification is done, and the self review ended
-clean.
+ran and what they found. Close with the ready signal only when the PR is open,
+static checks pass, verification is done, and the self review ended clean: run
+`gh label create "Manual Review Needed" --force --color 0E8A16` once, then add it
+to the PR.
 
 When the user says they reviewed the PR, check it for comments and act on them.
 Commits that answer comments go back through the self-review loop.
 
 ## 10. After the merge
+
+If the PR was closed without merging, remove `In Progress` from the issue (read it
+back), say why on the issue, and stop.
 
 1. Check the PR for unaddressed comments.
 2. If the issue is still open (`Closes #N` does not always link), close it by
