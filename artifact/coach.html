@@ -3680,7 +3680,7 @@ const snippet = (t) => { t = String(t || "").replace(/\s+/g, " ").trim(); return
 // `today` is the phone's own date, which can differ from the profile's time zone while traveling.
 // The app may be showing its permission screen while a read waits, so the page waits minutes, not seconds.
 const HEALTH_WAIT_MS = 5 * 60e3;
-const HEALTH = { at: 0, busy: null, gen: 0, last: null, waiting: new Map() };
+const HEALTH = { at: 0, busy: null, gen: 0, last: null, onChange: null, waiting: new Map() };
 const healthBridge = () => (window.FagerHealth && typeof window.FagerHealth.postMessage === "function" ? window.FagerHealth : null);
 function healthListen() {
   const b = healthBridge();
@@ -3710,17 +3710,19 @@ const isDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 const healthTakes = (cur, k, n) => n != null && cur[k] !== n && (cur[k] == null || cur.hc?.[k] === cur[k] || (n !== cur.hc?.[k] && n > Number(cur[k])));
 // Reads today and the last 7 days from the phone and saves what changed. Runs when the person's days
 // load, when the page or app comes to the front, and from Sync now; only while the page is visible, and
-// at most once a minute after a successful sync unless forced.
-async function healthSync(force = false) {
+// at most once a minute after a successful sync unless forced. Only Sync now passes `ask`, so only a tap
+// opens the phone's permission screen, Health Connect or the Play Store.
+async function healthSync(force = false, ask = false) {
   if (!healthBridge() || !S.pid || !S.prof?.activity || S.canWrite === false || !S.loaded?.has("days")) return null;
   if (document.visibilityState !== "visible") return null;
-  if (HEALTH.busy) return HEALTH.busy;
+  // Sync now waits for an automatic sync already running, then asks again with `ask`.
+  while (HEALTH.busy) { const b = HEALTH.busy; if (!ask) return b; await b; }
   if (!force && Date.now() - HEALTH.at < 60e3) return null;
   const pid = S.pid, today = S.today, gen = HEALTH.gen, dates = Array.from({ length: 8 }, (_, i) => addDays(today, -i));
   const run = (async () => {
     let res;
     try {
-      const m = await healthAsk({ type: "health.read", dates, ask: force });
+      const m = await healthAsk({ type: "health.read", dates, ask });
       if (gen !== HEALTH.gen) return null; // switched person while the phone answered
       if (m.type === "health.error" && m.error === "background") return null; // the app went to the background
       if (m.type === "health.error") res = { error: String(m.error || "failed"), message: m.message ? String(m.message) : "", owner: m.owner };
@@ -3728,7 +3730,7 @@ async function healthSync(force = false) {
       else {
         // A day still running on either clock stays partial.
         const openFrom = isDate(m.today) && m.today < today ? m.today : today;
-        let changed = 0;
+        const writes = [];
         for (const r of Array.isArray(m.days) ? m.days : []) {
           if (!r || !dates.includes(r.date) || S.pid !== pid) continue;
           const v = { steps: healthInt(r.steps, 200000), active: healthInt(r.activeKcal, 6000), exercise: healthInt(r.exerciseMin, 1440) };
@@ -3737,17 +3739,17 @@ async function healthSync(force = false) {
           const take = Object.keys(v).filter((k) => healthTakes(cur, k, v[k]));
           const fillWeight = w != null && cur.weight == null;
           if (!take.length && !fillWeight && (!cur.synced || !!cur.partial === partial)) continue;
-          await mutateDay(r.date, (x) => {
+          writes.push(mutateDay(r.date, (x) => {
             const hc = { ...(x.hc || {}) };
             for (const k of Object.keys(v)) if (healthTakes(x, k, v[k])) { x[k] = v[k]; hc[k] = v[k]; }
             if (w != null && x.weight == null) x.weight = w; // a weigh-in only fills an empty day, like the email import
             x.hc = hc;
             x.partial = partial;
             x.synced = Date.now();
-          });
-          changed++;
+          }));
         }
-        res = { owner: m.owner, days: changed };
+        await Promise.all(writes);
+        res = { owner: m.owner, days: writes.length };
         HEALTH.at = Date.now();
       }
     } catch (e) {
@@ -3755,7 +3757,7 @@ async function healthSync(force = false) {
     }
     if (gen !== HEALTH.gen) return null;
     HEALTH.last = { at: Date.now(), ...res };
-    document.dispatchEvent(new Event("healthsync"));
+    HEALTH.onChange?.();
     return HEALTH.last;
   })().finally(() => { if (HEALTH.busy === run) HEALTH.busy = null; });
   HEALTH.busy = run;
@@ -3788,13 +3790,13 @@ function healthSyncBox() {
   const btn = h("button", { class: "btn sm", type: "button", onclick: async () => {
     if (!S.prof.activity) { toast("Turn on Track steps and exercise, then Save."); return; }
     btn.disabled = true;
-    const run = healthSync(true);
+    const run = healthSync(true, true);
     draw();
     await run; btn.disabled = false; draw();
   } }, "Sync now");
   const draw = () => { status.textContent = healthStatusText() || (S.prof.activity ? "" : "Turn this on and Save to start syncing."); };
-  const onSync = () => { if (!status.isConnected) { document.removeEventListener("healthsync", onSync); return; } draw(); };
-  document.addEventListener("healthsync", onSync);
+  // One Settings screen shows at a time, so the newest box takes over the update hook.
+  HEALTH.onChange = () => { if (status.isConnected) draw(); else if (HEALTH.onChange) HEALTH.onChange = null; };
   draw();
   return h("div", { class: "stack" }, h("div", { class: "row" }, btn), status);
 }

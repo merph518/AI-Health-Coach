@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import android.view.ViewGroup
@@ -66,8 +67,10 @@ class MainActivity : ComponentActivity() {
         // Only the artifact's own frame may use the bridge. claude.ai serves each artifact from a frame on
         // https://<id>.frame.claudeusercontent.com, inside the artifact page on claude.ai.
         private val FRAME_ORIGINS = setOf("https://*.frame.claudeusercontent.com")
-        // Android stops showing the Health Connect permission screen after it's been denied twice.
-        private const val DENIALS_BEFORE_BLOCKED = 2
+        // After two denials Android stops showing the Health Connect permission screen and answers at once.
+        // A screen the person actually saw takes far longer than this to answer; backing out of it doesn't
+        // count as blocked.
+        private const val BLOCKED_ANSWER_MS = 500L
         // Renderer crashes kept across recreate(), so a page that keeps crashing doesn't loop forever.
         private val crashes = ArrayDeque<Long>()
     }
@@ -315,8 +318,7 @@ class MainActivity : ComponentActivity() {
             else -> return error("unsupported", "Health Connect isn't available on this phone.")
         }
         if (!health.granted().containsAll(HealthReader.PERMISSIONS)) {
-            val denials = prefs.getInt("denials", 0)
-            if (denials >= DENIALS_BEFORE_BLOCKED) {
+            if (prefs.getBoolean("blocked", false)) {
                 // Android won't show the permission screen again; the person has to allow it in Health Connect.
                 if (req.optBoolean("ask")) openHealthConnect()
                 return error("permission_blocked")
@@ -325,13 +327,16 @@ class MainActivity : ComponentActivity() {
             prefs.edit { putBoolean("asked", true) }
             val wait = CompletableDeferred<Set<String>>()
             permissionWait = wait
+            val started = SystemClock.elapsedRealtime()
             permissionLauncher.launch(HealthReader.PERMISSIONS)
             if (!wait.await().containsAll(HealthReader.PERMISSIONS)) {
-                prefs.edit { putInt("denials", denials + 1) }
-                return error(if (denials + 1 >= DENIALS_BEFORE_BLOCKED) "permission_blocked" else "permission")
+                if (SystemClock.elapsedRealtime() - started > BLOCKED_ANSWER_MS) return error("permission")
+                prefs.edit { putBoolean("blocked", true) }
+                openHealthConnect()
+                return error("permission_blocked")
             }
         }
-        prefs.edit { remove("denials") }
+        if (prefs.contains("blocked")) prefs.edit { remove("blocked") }
 
         val dates = req.optJSONArray("dates") ?: JSONArray()
         val wanted = (0 until dates.length()).mapNotNull { runCatching { LocalDate.parse(dates.getString(it)) }.getOrNull() }

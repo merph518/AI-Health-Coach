@@ -50,6 +50,9 @@ android {
         // CI fails on any lint warning, so new ones get fixed or explicitly suppressed.
         warningsAsErrors = true
         abortOnError = true
+        // "A newer version is available" depends on what Google publishes that day, not on this code, so it is
+        // reported without failing the build.
+        informational += setOf("GradleDependency", "AndroidGradlePluginVersion", "NewerVersionAvailable")
     }
 
     compileOptions {
