@@ -658,11 +658,15 @@ function dayView(date) {
     })
     .sort((a, b) => mealRank(a.meal) - mealRank(b.meal) || a.n - b.n);
   const base = baseFor(date);
-  const active = act && doc.active != null ? Number(doc.active) : null;
+  // Exercises entered one by one (Leah and Eve, Daily Log) set the day's exercise minutes, and its
+  // active calories when any of them has a calorie number; otherwise the day's own totals are used.
+  const workouts = act && Array.isArray(doc.workouts) ? doc.workouts.map((w) => ({ id: String(w.id), type: String(w.type || "Exercise"), min: Number(w.min) || 0, kcal: w.kcal != null ? Number(w.kcal) : null })) : [];
+  const woKcal = workouts.some((w) => w.kcal != null) ? workouts.reduce((t, w) => t + (w.kcal || 0), 0) : null;
+  const active = !act ? null : woKcal != null ? woKcal : doc.active != null ? Number(doc.active) : null;
   return {
-    date, items, base, active,
+    date, items, base, active, workouts,
     steps: act && doc.steps != null ? Number(doc.steps) : null,
-    exercise: act && doc.exercise != null ? Number(doc.exercise) : null,
+    exercise: !act ? null : workouts.length ? workouts.reduce((t, w) => t + w.min, 0) : doc.exercise != null ? Number(doc.exercise) : null,
     partial: !!doc.partial,
     weight: doc.weight != null ? Number(doc.weight) : null,
     target: base == null ? null : base + (active != null ? Math.round(active * eat) : 0),
@@ -1227,7 +1231,7 @@ function buildTodayForms() {
   } }, h("label", { class: "field grow" }, "Today's weight (lb)", wt), wBtn);
 
   let actForm = null;
-  if (S.prof.activity) {
+  if (S.prof.activity && S.pid === "michael") {
     const act = h("input", { type: "number", inputmode: "numeric", min: "0", "aria-label": "Active calories" });
     const part = h("input", { type: "checkbox", checked: true });
     part.checked = true;
@@ -1242,12 +1246,73 @@ function buildTodayForms() {
       h("button", { class: "btn", type: "submit" }, "Save"));
   }
 
+  const act = S.pid === "michael" ? null : activityForms();
   todayForms = h("div", { class: "stack" },
     h("section", { class: "card" }, foodForm),
-    h("section", { class: "card stack", style: "gap:12px" }, wForm, actForm));
+    h("section", { class: "card stack", style: "gap:12px" }, wForm, actForm),
+    act?.card);
+  todayForms._act = act;
   todayForms._meal = meal;
   meal.addEventListener("change", () => { todayForms._touched = true; });
   renderLibraryList();
+}
+// Leah and Eve, with activity tracking on: today's steps and individual exercises, typed in by hand
+// until their watch data syncs (issue #8). Built once with the other forms so typing survives re-renders;
+// render(d) refreshes the list and totals.
+const EXERCISES = ["Walking", "Running", "Cycling", "Swimming", "Strength training", "Yoga", "Pilates", "Dancing", "Elliptical", "Hiking", "Stairs", "Yard work", "Sports"];
+function activityForms() {
+  const num = (ph, max, label) => h("input", { type: "number", inputmode: "numeric", min: "0", max, placeholder: ph, "aria-label": label });
+  const steps = num("e.g. 6500", "200000", "Steps today");
+  const stepsForm = h("form", { class: "row", onsubmit: async (e) => {
+    e.preventDefault();
+    const n = Math.round(Number(steps.value));
+    if (steps.value === "" || !(n >= 0 && n <= 200000)) { toast("Enter today's steps."); return; }
+    try { await mutateDay(S.today, (x) => { x.steps = n; x.partial = true; }); steps.value = ""; toast("Steps saved."); renderAll(); } catch (err) { toast(writeError(err)); }
+  } }, h("label", { class: "field grow" }, "Steps today (total so far)", steps), h("button", { class: "btn", type: "submit" }, "Save"));
+  const type = h("input", { list: "exList", placeholder: "e.g. Walking", autocomplete: "off", maxlength: "40", "aria-label": "Exercise" });
+  const min = num("30", "1440", "Minutes"), kcal = num("Optional", "3000", "Calories from your watch");
+  const exForm = h("form", { class: "stack", style: "gap:8px", onsubmit: async (e) => {
+    e.preventDefault();
+    const t = type.value.trim().slice(0, 40), m = Math.round(Number(min.value)), k = kcal.value === "" ? null : Math.round(Number(kcal.value));
+    if (!t) { toast("What did you do?"); type.focus(); return; }
+    if (!(m >= 1 && m <= 1440)) { toast("Enter the minutes."); min.focus(); return; }
+    if (k != null && !(k >= 0 && k <= 3000)) { toast("Check the calories."); return; }
+    try {
+      await addWorkout(S.today, { type: t, min: m, kcal: k });
+      type.value = ""; min.value = ""; kcal.value = ""; toast(`Added ${t.toLowerCase()}.`); renderAll();
+    } catch (err) { toast(writeError(err)); }
+  } },
+    h("datalist", { id: "exList" }, EXERCISES.map((x) => h("option", { value: x }))),
+    h("label", { class: "field" }, "Exercise", type),
+    h("div", { class: "row" }, h("label", { class: "field grow" }, "Minutes", min), h("label", { class: "field grow" }, "Calories (from your watch)", kcal),
+      h("button", { class: "btn btn-primary", type: "submit", style: "align-self:flex-end" }, "Add")));
+  const list = h("div"), totals = h("p", { class: "small muted" });
+  const card = h("section", { class: "card stack", style: "gap:12px" },
+    h("h2", {}, "Activity today"), stepsForm, h("hr", { style: "border:0;border-top:1px solid var(--border);margin:2px 0" }), exForm, list, totals);
+  return {
+    card,
+    render(d) {
+      card.hidden = !S.prof.activity;
+      if (!S.prof.activity) return;
+      const goal = Number(S.prof.stepGoal) || 6000;
+      steps.placeholder = d.steps != null ? `${fmt(d.steps)} so far` : "e.g. 6500";
+      list.replaceChildren(...(d.workouts.length ? [h("ul", { class: "items" }, d.workouts.map((w) => h("li", {},
+        h("span", {}, clean(w.type)),
+        h("span", { class: "right" }, h("span", { class: "num" }, `${fmt(w.min)} min${w.kcal != null ? ` · ${fmt(w.kcal)} cal` : ""}`),
+          h("button", { class: "x", "aria-label": `Remove ${clean(w.type)}`, title: "Remove", onclick: () => removeWorkout(S.today, w.id).then(renderAll, (err) => toast(writeError(err))) }, "×")))))] : []));
+      const eat = Math.round((d.active || 0) * (S.prof.eatBackPct ?? 0.5));
+      totals.textContent = [`${d.steps != null ? fmt(d.steps) : "No"} steps of your ${fmt(goal)} goal`,
+        d.exercise ? `${fmt(d.exercise)} min exercise` : "", d.active != null ? `${fmt(d.active)} active cal adds ${fmt(eat)} to your budget` : ""].filter(Boolean).join(" · ") + ".";
+    },
+  };
+}
+async function addWorkout(date, { type, min, kcal }) {
+  const w = { id: uid(), type, min, at: Date.now(), ...(kcal != null ? { kcal } : {}) };
+  await mutateDay(date, (x) => { x.workouts = [...(Array.isArray(x.workouts) ? x.workouts : []), w]; if (date === S.today) x.partial = true; });
+  return w;
+}
+function removeWorkout(date, id) {
+  return mutateDay(date, (x) => { const before = (x.workouts || []).length; x.workouts = (x.workouts || []).filter((w) => String(w.id) !== String(id)); if (x.workouts.length === before) return false; });
 }
 // ---------- recipes ----------
 // A recipe is a library food with a `recipe` field: {id, servings, items: [{item, qty, kcal, p, c, f}], at}.
@@ -1448,6 +1513,7 @@ function renderToday() {
         d.weight != null ? ` Weighed in at ${d.weight} lb.` : ""));
   }
   if (todayForms && !todayForms._touched) { todayForms._meal.value = defaultMeal(); }
+  todayForms?._act?.render(d);
   v.replaceChildren(viewTabs("today"), viewSec("today") === "check"
     ? h("div", { class: "stack" }, programOn() ? programCard(d) : basicChecklist(d))
     : h("div", { class: "stack" },
@@ -2460,7 +2526,7 @@ function stepsTask(d) {
 }
 function openActivity() {
   const dlg = sheet("Log activity");
-  const d = S.days[S.today] || {};
+  const d = S.days[S.today] || {}, dv = dayView(S.today);
   const box = (v, max, ph) => h("input", { type: "number", inputmode: "numeric", min: "0", max, value: v ?? "", placeholder: ph });
   const steps = box(d.steps, "200000", "e.g. 5200"), ex = box(d.exercise, "1440", "e.g. 30"), act = box(d.active, "6000", "Optional");
   const part = h("input", { type: "checkbox" });
@@ -2469,6 +2535,8 @@ function openActivity() {
   const save = h("button", { class: "btn btn-primary", type: "button", onclick: async () => {
     const v = { steps: read(steps, 200000), exercise: read(ex, 1440), active: read(act, 6000) };
     if (Object.values(v).some(Number.isNaN)) { toast("Check the numbers."); return; }
+    if (dv.workouts.length) v.exercise = undefined;
+    if (dv.workouts.some((w) => w.kcal != null)) v.active = undefined;
     if (Object.values(v).every((x) => x === undefined)) { toast("Enter steps or exercise minutes."); return; }
     save.disabled = true;
     try {
@@ -2478,9 +2546,10 @@ function openActivity() {
   } }, "Save");
   put(dlg, h("div", { class: "sheet-head" }, h("h2", { class: "serif" }, "Today's activity"), closeX(dlg)),
     h("p", { class: "small muted" }, `Enter today's totals so far (your step goal is ${fmt(Number(S.prof.stepGoal) || 6000)}). You can also just tell your coach, like "I walked 30 minutes" or "8,000 steps today".`),
-    h("div", { class: "row" }, h("label", { class: "field grow" }, "Steps", steps), h("label", { class: "field grow" }, "Exercise minutes", ex)),
-    h("label", { class: "field" }, "Active calories from your watch", act),
-    h("p", { class: "small muted" }, `Active calories add ${Math.round((S.prof.eatBackPct ?? 0.5) * 100)}% back to today's budget. Leave it blank if you don't have a number.`),
+    h("div", { class: "row" }, h("label", { class: "field grow" }, "Steps", steps), dv.workouts.length ? null : h("label", { class: "field grow" }, "Exercise minutes", ex)),
+    dv.workouts.some((w) => w.kcal != null) ? null : h("label", { class: "field" }, "Active calories from your watch", act),
+    dv.workouts.length ? h("p", { class: "small muted" }, `Exercise comes from the ${dv.workouts.length} exercise${dv.workouts.length === 1 ? "" : "s"} on today's `, h("button", { type: "button", class: "applink", onclick: () => { dlg.close(); setViewSec("today", "log"); } }, "Daily Log"), ".") : null,
+    dv.workouts.some((w) => w.kcal != null) ? null : h("p", { class: "small muted" }, `Active calories add ${Math.round((S.prof.eatBackPct ?? 0.5) * 100)}% back to today's budget. Leave it blank if you don't have a number.`),
     h("label", { class: "small muted", style: "display:flex;gap:6px;align-items:center;min-height:40px" }, part, "Day not over yet"),
     h("div", {}, save));
   focusSoftly(steps);
@@ -3553,7 +3622,8 @@ function daySummary(date) {
     date, items: d.items.map((i) => ({ id: i.id, meal: i.meal, item: i.item, qty: i.qty, kcal: i.cal, protein: i.p })),
     total_kcal: d.cal, protein: d.p, carbs: d.c, fat: d.f, target_kcal: d.target,
     left_kcal: d.target == null ? null : d.target - d.cal, weight_lb: d.weight,
-    ...(S.prof.activity ? { active_kcal: d.active, steps: d.steps, step_goal: Number(S.prof.stepGoal) || 6000, exercise_min: d.exercise, activity_partial: d.partial } : {}),
+    ...(S.prof.activity ? { active_kcal: d.active, steps: d.steps, step_goal: Number(S.prof.stepGoal) || 6000, exercise_min: d.exercise, activity_partial: d.partial,
+      ...(d.workouts.length ? { exercises: d.workouts.map((w) => ({ id: w.id, type: w.type, minutes: w.min, kcal: w.kcal })) } : {}) } : {}),
   };
 }
 const DATE = { type: "string", description: "YYYY-MM-DD, the person's local date" };
@@ -3871,7 +3941,7 @@ function coachTools(chip) {
   });
   if (S.prof.activity) tools.push({
     name: "log_activity",
-    description: (S.pid === "michael" ? "Record Apple Watch numbers for a date (e.g. from a screenshot)." : "Record steps, exercise minutes and (only if they give a number from their watch or phone) active calories for a date. Never estimate active calories.")
+    description: (S.pid === "michael" ? "Record Apple Watch numbers for a date (e.g. from a screenshot)." : "Record the day's total steps (and, only if they give a number from their watch or phone, total active calories) for a date. Never estimate active calories. For an exercise session (a walk, a class), use log_exercise instead of exercise_min.")
       + " Values are the day's totals, so they replace what's there: if they say they walked another 2,000 steps, add it to the current total from the day summary first. Same-day numbers are partial; replace them later with the full day.",
     inputSchema: { type: "object", required: ["date", "partial"], properties: { date: DATE, active_kcal: { type: "number" }, steps: { type: "integer" }, exercise_min: { type: "integer" }, partial: { type: "boolean", description: "true if the day is not over yet" } } },
     async execute(a) {
@@ -3880,6 +3950,29 @@ function coachTools(chip) {
       if (active == null && steps == null && ex == null) throw new ToolErr("Give steps, exercise_min or active_kcal.");
       await mutateDay(date, (d) => { if (active != null) d.active = active; d.partial = !!a.partial; if (steps != null) d.steps = steps; if (ex != null) d.exercise = ex; });
       chip("Logged activity");
+      return { day: daySummary(date) };
+    },
+  });
+  if (S.prof.activity && S.pid !== "michael") tools.push({
+    name: "log_exercise",
+    description: "Add one exercise session they did (a walk, a class, a bike ride) to a date's list. Minutes are required. Pass kcal only if they give a calorie number from their watch or a machine; never estimate it. The day's exercise minutes and active calories are totaled from this list. To fix one, remove_exercise it and add it again.",
+    inputSchema: { type: "object", required: ["date", "type", "minutes"], properties: { date: DATE, type: { type: "string", description: "Short name, e.g. Walking, Yoga, Strength training" }, minutes: { type: "integer" }, kcal: { type: "number" } } },
+    async execute(a) {
+      const date = vDate(a.date), type = String(a.type || "").trim().slice(0, 40);
+      if (!type) throw new ToolErr("type is required");
+      const w = await addWorkout(date, { type, min: num(a.minutes, "minutes", 1, 1440), kcal: optNum(a.kcal, "kcal", 0, 3000) });
+      chip(`Logged ${type.toLowerCase()}`);
+      return { added: w.id, day: daySummary(date) };
+    },
+  }, {
+    name: "remove_exercise",
+    description: "Remove one exercise from a date's list by its id (from the day summary's exercises).",
+    inputSchema: { type: "object", required: ["date", "id"], properties: { date: DATE, id: { type: "string" } } },
+    async execute(a) {
+      const date = vDate(a.date);
+      const out = await removeWorkout(date, a.id);
+      if (out === null) throw new ToolErr("No exercise with that id on that date.");
+      chip("Removed exercise");
       return { day: daySummary(date) };
     },
   });

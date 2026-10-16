@@ -25,7 +25,8 @@ Feedback tab or the coach's `send_feedback` tool.
   stepGoal (Activity tab; default 6000; the step task shows whenever activity tracking is on, and tapping it
   opens a sheet to enter steps, exercise minutes and optional active calories by hand. Anyone can turn
   activity on in Settings → Activity: Michael's numbers come from Apple Health, Leah's and Eve's are typed
-  in or told to the coach (log_activity) until Google Health sync lands, see issue #8),
+  in (Today → Daily Log → "Activity today": steps plus individual exercises) or told to the coach
+  (log_activity, log_exercise, remove_exercise) until Google Health sync lands, see issue #8),
   waterUnit glass|s16|m24|l32 (8/16/24/32 oz) and waterGoal (count a day; default about 64 oz),
   theme light|dark|system and photos (Appearance; default light with photos),
   font default|system|rounded|readable|serif and textSize s|m|l|xl (Appearance; extra fonts load from Google Fonts only when picked),
@@ -39,7 +40,8 @@ Feedback tab or the coach's `send_feedback` tool.
   prompt always adds a positive, celebrate-the-small-wins baseline under their chosen tone.
 - `people/{pid}/days/{YYYY-MM-DD}`: items [{id, meal, item, qty, kcal, p, c, f, grams?,
   color? green|yellow|orange, note?}] (nutrition per unit), weight, water (count of that day's waterUnit, default glass),
-  active, steps, exercise (minutes), partial, meds (time the "Take morning meds" checklist task was ticked; hidden for anyone
+  active, steps, exercise (minutes), partial, workouts [{id, type, min, kcal?, at}] (Leah and Eve: exercises entered
+  by hand; when present, their minutes replace `exercise` and, if any has kcal, their calories replace `active`), meds (time the "Take morning meds" checklist task was ticked; hidden for anyone
   whose profile has hideMeds, set from Settings → Program)
   opened (time they first opened the Today tab that day; check-ins only link to the checklist when it
   and yesterday show no use) and worklist (Leah only, Monday to Friday: time "Submit your daily list for work" was ticked)
