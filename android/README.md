@@ -26,10 +26,18 @@ phone it is.
 
 ```
 page → app  {type: "health.read", id, dates: ["YYYY-MM-DD", …], ask?: bool}
-app → page  {type: "health.data", id, owner, days: [{date, steps?, activeKcal?, exerciseMin?, weightLb?}]}
-            {type: "health.error", id, owner, error: "permission" | "unavailable" | "failed", message?}
+app → page  {type: "health.data", id, owner, today, days: [{date, steps?, activeKcal?, exerciseMin?, weightLb?}]}
+            {type: "health.error", id, owner, error, message?}
             {type: "health.wake"}
 ```
+
+`today` is the phone's date. `error` is one of `permission` (not allowed yet), `permission_blocked`
+(denied twice, so Android won't ask again; Sync now opens Health Connect instead), `unavailable` (needs
+installing or updating), `unsupported` (no Health Connect on this phone), `no_owner`, `background` (the
+app wasn't on screen; the page ignores it and syncs on the next `health.wake`) or `failed`.
+
+The bridge answers only frames on `https://*.frame.claudeusercontent.com` (where claude.ai serves
+artifacts), and only while the top page is the coach artifact itself (`COACH_URL`).
 
 `ask: true` (Sync now) lets the app open the Health Connect permission screen or its Play Store page;
 automatic syncs ask only the first time. An iPhone app can inject a `window.FagerHealth` with the same
@@ -66,7 +74,14 @@ keytool -genkeypair -v -keystore release.jks -alias coach -keyalg RSA -keysize 4
 
 Then add repo secrets `ANDROID_KEYSTORE_B64` (`base64 -w0 release.jks`), `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_KEY_ALIAS` (`coach`) and `ANDROID_KEY_PASSWORD`. With the secrets set, CI builds a signed release
-APK; without them, a debug APK.
+APK; without them, a debug APK, which is only for a one-off try: it's signed with a throwaway key, so a
+later release can't install over it (uninstall it first, and sign in again).
+
+To point a build at the private test artifact instead of the live coach, set `COACH_URL` when building:
+
+```bash
+COACH_URL=https://claude.ai/artifact/Dyemov2twz4ziBgDTHTZrn JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleDebug
+```
 
 ## Installing on Leah's and Eve's phones
 
@@ -80,6 +95,6 @@ APK; without them, a debug APK.
 ## Still to check on a real phone (the spike in #8)
 
 1. claude.ai email sign-in, the artifact's `db` and `sample`, and photo upload work inside the WebView.
-2. Which origin the artifact frame runs on (logged as `health.read from <origin>`, tag `FagerCoach`), so
-   the listener's `"*"` origin rule can be narrowed to it.
+2. The bridge reaches the artifact frame (logged as `health.read from <origin>`, tag `FagerCoach`). In a
+   desktop browser the frame is `https://<id>.frame.claudeusercontent.com`; check the WebView matches.
 3. Health Connect returns sensible numbers on their phones.

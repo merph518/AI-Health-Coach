@@ -62,7 +62,7 @@ class HealthReader(private val context: Context) {
                 date = date,
                 steps = r?.get(StepsRecord.COUNT_TOTAL),
                 activeKcal = r?.get(ActiveCaloriesBurnedRecord.ACTIVE_CALORIES_TOTAL)?.inKilocalories,
-                exerciseMin = r?.get(ExerciseSessionRecord.EXERCISE_DURATION_TOTAL)?.toMinutes(),
+                exerciseMin = r?.get(ExerciseSessionRecord.EXERCISE_DURATION_TOTAL)?.let { (it.seconds + 30) / 60 },
             )
         }
     }

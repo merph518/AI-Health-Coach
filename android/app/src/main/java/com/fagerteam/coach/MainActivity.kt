@@ -21,6 +21,7 @@ import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +33,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebViewCompat
@@ -52,15 +54,22 @@ import kotlin.math.roundToLong
  *
  * Bridge (shared with the iPhone app, see android/README.md): the page posts
  * {type: "health.read", id, dates, ask?} to window.FagerHealth and gets back
- * {type: "health.data", id, owner, days: [{date, steps?, activeKcal?, exerciseMin?}]} or
+ * {type: "health.data", id, owner, today, days: [{date, steps?, activeKcal?, exerciseMin?}]} or
  * {type: "health.error", id, owner, error, message?}. The app also posts {type: "health.wake"}
- * when it comes back to the front, so the page syncs again.
+ * when it comes back to the front or its owner changes, so the page syncs again.
  */
 class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "FagerCoach"
         private const val ACTION_CHOOSE_OWNER = "com.fagerteam.coach.CHOOSE_OWNER"
         private val OWNERS = listOf("leah" to "Leah", "eve" to "Eve")
+        // Only the artifact's own frame may use the bridge. claude.ai serves each artifact from a frame on
+        // https://<id>.frame.claudeusercontent.com, inside the artifact page on claude.ai.
+        private val FRAME_ORIGINS = setOf("https://*.frame.claudeusercontent.com")
+        // Android stops showing the Health Connect permission screen after it's been denied twice.
+        private const val DENIALS_BEFORE_BLOCKED = 2
+        // Renderer crashes kept across recreate(), so a page that keeps crashing doesn't loop forever.
+        private val crashes = ArrayDeque<Long>()
     }
 
     private lateinit var web: WebView
@@ -74,6 +83,7 @@ class MainActivity : ComponentActivity() {
     private var page: JavaScriptReplyProxy? = null
     private val healthLock = Mutex()
     private var resumedOnce = false
+    private var webGone = false
 
     private var permissionWait: CompletableDeferred<Set<String>>? = null
     private val permissionLauncher =
@@ -129,18 +139,23 @@ class MainActivity : ComponentActivity() {
         }
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            // "*" because the artifact runs in a sandboxed frame whose origin isn't claude.ai. The listener
-            // only answers while the top page is claude.ai, and only with steps, active calories and exercise.
-            WebViewCompat.addWebMessageListener(web, "FagerHealth", setOf("*")) { view, message, origin, _, reply ->
-                if (!isClaude((view.url ?: "").toUri())) return@addWebMessageListener
+            // The listener answers only the artifact frame (never the top page), and only while the top page
+            // is the coach artifact itself, not another claude.ai artifact.
+            WebViewCompat.addWebMessageListener(web, "FagerHealth", FRAME_ORIGINS) { view, message, origin, isMainFrame, reply ->
+                if (isMainFrame || !isCoach((view.url ?: "").toUri())) return@addWebMessageListener
                 val req = runCatching { JSONObject(message.data ?: "") }.getOrNull() ?: return@addWebMessageListener
                 if (req.optString("type") != "health.read") return@addWebMessageListener
                 Log.i(TAG, "health.read from $origin")
                 page = reply
                 lifecycleScope.launch { reply.postMessage(healthRead(req).toString()) }
             }
-        } else {
-            Log.w(TAG, "This WebView has no web message listener; Health Connect sync is off. Update Android System WebView.")
+        } else if (!prefs.getBoolean("warnedWebView", false)) {
+            prefs.edit { putBoolean("warnedWebView", true) }
+            AlertDialog.Builder(this)
+                .setTitle(R.string.webview_old_title)
+                .setMessage(R.string.webview_old_message)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -158,19 +173,21 @@ class MainActivity : ComponentActivity() {
         if (intent.action == ACTION_CHOOSE_OWNER) chooseOwner()
     }
 
+    // After a renderer crash the WebView is destroyed until recreate() builds a new one.
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        web.saveState(outState)
+        if (!webGone) web.saveState(outState)
     }
 
     override fun onResume() {
         super.onResume()
+        if (webGone) return
         web.onResume()
         if (resumedOnce) wake() else resumedOnce = true
     }
 
     override fun onPause() {
-        web.onPause()
+        if (!webGone) web.onPause()
         CookieManager.getInstance().flush()
         super.onPause()
     }
@@ -192,16 +209,26 @@ class MainActivity : ComponentActivity() {
         // drop it and rebuild the screen (the page reloads; the claude.ai sign-in is in cookies).
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
             Log.w(TAG, "WebView renderer gone (crashed: ${detail.didCrash()})")
+            webGone = true
             (view.parent as? ViewGroup)?.removeView(view)
             view.destroy()
             page = null
-            recreate()
+            val now = System.currentTimeMillis()
+            crashes.addLast(now)
+            while (crashes.first() < now - 60_000) crashes.removeFirst()
+            if (crashes.size > 3) {
+                // Crashing over and over: stop rather than loop. Opening the app again starts fresh.
+                Toast.makeText(this@MainActivity, R.string.webview_crashed, Toast.LENGTH_LONG).show()
+                finish()
+            } else {
+                recreate()
+            }
             return true
         }
     }
 
     private fun wake() {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
+        if (webGone || !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
         runCatching { page?.postMessage(JSONObject().put("type", "health.wake").toString()) }
     }
 
@@ -209,6 +236,10 @@ class MainActivity : ComponentActivity() {
         val host = uri.host ?: return false
         return uri.scheme == "https" && (host == "claude.ai" || host.endsWith(".claude.ai"))
     }
+
+    /** The coach artifact page itself (BuildConfig.COACH_URL), on claude.ai. */
+    private fun isCoach(uri: Uri): Boolean =
+        isClaude(uri) && uri.path?.trimEnd('/') == BuildConfig.COACH_URL.toUri().path?.trimEnd('/')
 
     private fun openOutside(uri: Uri) {
         try {
@@ -266,25 +297,41 @@ class MainActivity : ComponentActivity() {
         fun error(code: String, message: String? = null) =
             out.put("type", "health.error").put("error", code).apply { if (message != null) put("message", message) }
 
-        if (owner == null) return error("failed", "Pick whose phone this is first.")
-        // An explicit Sync now may open the Play Store or the permission screen; automatic syncs ask only once.
+        // Only read while the app is on screen; the page syncs again when it comes back (health.wake).
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return error("background")
+        if (owner == null) return error("no_owner")
+        // An explicit Sync now may open the Play Store, Health Connect or the permission screen; automatic
+        // syncs ask only once.
         val ask = req.optBoolean("ask") || !prefs.getBoolean("asked", false)
         when (health.sdkStatus()) {
             HealthConnectClient.SDK_AVAILABLE -> Unit
             HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> {
-                if (ask) openOutside("market://details?id=${HealthReader.PROVIDER}&url=healthconnect%3A%2F%2Fonboarding".toUri())
+                if (ask) {
+                    prefs.edit { putBoolean("asked", true) }
+                    openOutside("market://details?id=${HealthReader.PROVIDER}&url=healthconnect%3A%2F%2Fonboarding".toUri())
+                }
                 return error("unavailable", "Health Connect needs to be installed or updated.")
             }
-            else -> return error("unavailable", "Health Connect isn't available on this phone.")
+            else -> return error("unsupported", "Health Connect isn't available on this phone.")
         }
         if (!health.granted().containsAll(HealthReader.PERMISSIONS)) {
+            val denials = prefs.getInt("denials", 0)
+            if (denials >= DENIALS_BEFORE_BLOCKED) {
+                // Android won't show the permission screen again; the person has to allow it in Health Connect.
+                if (req.optBoolean("ask")) openHealthConnect()
+                return error("permission_blocked")
+            }
             if (!ask) return error("permission")
             prefs.edit { putBoolean("asked", true) }
             val wait = CompletableDeferred<Set<String>>()
             permissionWait = wait
             permissionLauncher.launch(HealthReader.PERMISSIONS)
-            if (!wait.await().containsAll(HealthReader.PERMISSIONS)) return error("permission")
+            if (!wait.await().containsAll(HealthReader.PERMISSIONS)) {
+                prefs.edit { putInt("denials", denials + 1) }
+                return error(if (denials + 1 >= DENIALS_BEFORE_BLOCKED) "permission_blocked" else "permission")
+            }
         }
+        prefs.edit { remove("denials") }
 
         val dates = req.optJSONArray("dates") ?: JSONArray()
         val wanted = (0 until dates.length()).mapNotNull { runCatching { LocalDate.parse(dates.getString(it)) }.getOrNull() }
@@ -297,12 +344,20 @@ class MainActivity : ComponentActivity() {
                     d.exerciseMin?.let { put("exerciseMin", it) }
                 })
             }
-            out.put("type", "health.data").put("days", days)
+            out.put("type", "health.data").put("today", LocalDate.now().toString()).put("days", days)
         } catch (e: SecurityException) {
             error("permission")
         } catch (e: Exception) {
             Log.w(TAG, "Health Connect read failed", e)
             error("failed", e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    private fun openHealthConnect() {
+        try {
+            startActivity(Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS))
+        } catch (e: ActivityNotFoundException) {
+            Log.w(TAG, "No Health Connect settings screen")
         }
     }
 }
