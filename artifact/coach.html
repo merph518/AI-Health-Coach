@@ -3277,7 +3277,8 @@ function checkinPlan() {
   }
   if (programOn() && S.program !== undefined && !said.has("lesson")) {
     const P0 = prog();
-    if (P0.next) topics.push({ k: "lesson", link: !lessonDoneOn(S.today) && !lessonDoneOn(addDays(S.today, -1)),
+    const title = String(P0.next?.title || "Today's lesson").replace(/[\[\]()]/g, "").slice(0, 60);
+    if (P0.next) topics.push({ k: "lesson", link: !lessonDoneOn(S.today) && !lessonDoneOn(addDays(S.today, -1)), md: `[${title}](app:lesson)`,
       facts: [`Today's lesson: "${P0.next.title || "Today's lesson"}" (about 5 minutes, week ${P0.week}: ${P0.theme})${P0.behind > 1 ? `. ${P0.behind - 1} more waiting to catch up on` : ""}.`] });
     else if (P0.doneToday.length) topics.push({ k: "lesson", facts: [`They already finished today's lesson ("${P0.doneToday[0].title || "Today's lesson"}").`] });
   }
@@ -3285,6 +3286,7 @@ function checkinPlan() {
   return { slot: slotTime, part: slot, asks, topics, status: d.target != null && d.cal > 0 ? `So far today: ${fmt(d.cal)} of ${fmt(d.target)} cal, ${fmt(d.target - d.cal)} left.` : "" };
 }
 const APP_LINKS = { checklist: "[Daily Checklist](app:checklist)", lesson: "[today's lesson](app:lesson)" };
+const topicLink = (t) => t.md || APP_LINKS[t.k];
 // Plain fallback when Claude can't write it.
 function checkinFallback(plan) {
   const hello = { morning: "Good morning", midday: "Hi", evening: "Good evening" }[plan.part];
@@ -3295,7 +3297,7 @@ function checkinFallback(plan) {
       if (lw && start && start - lw.weight >= 0.5) L.push(`You're down ${r1(start - lw.weight)} lb so far. Nice work!`);
     }
     if (t.k === "checklist") L.push(t.link ? `Your ${APP_LINKS.checklist} has today's small steps waiting.` : "");
-    if (t.k === "lesson" && t.link) L.push(`There's a short new lesson for you: ${APP_LINKS.lesson}.`);
+    if (t.k === "lesson" && t.link) L.push(`Today's lesson is ${topicLink(t)}, about five minutes.`);
   }
   return [L.filter(Boolean).join(" "), plan.asks.join(" "), plan.status].filter(Boolean).join("\n\n");
 }
@@ -3307,7 +3309,7 @@ async function writeCheckin(plan) {
   for (const t of plan.topics) {
     if (t.k === "progress") parts.push("PROGRESS: one specific, encouraging observation about their progress toward their own goal, using the facts below. Celebrate real wins (a drop, a streak, a day on target); if things are flat or up, be kind and look forward. Never invent numbers, never shame.");
     if (t.k === "checklist") parts.push(`CHECKLIST: one short sentence about today's daily checklist (what's left, or a nudge to start it)${t.link ? `. They haven't been using it lately, so include this link exactly as written, inside the sentence: ${APP_LINKS.checklist}` : ". No link."}`);
-    if (t.k === "lesson") parts.push(`LESSON: one short sentence about today's lesson, naming it${t.link ? ` and making it sound worth five minutes. They haven't done one lately, so include this link exactly as written: ${APP_LINKS.lesson}` : ". No link."}`);
+    if (t.k === "lesson") parts.push(`LESSON: one short sentence about today's lesson${t.link ? ` that makes it sound worth five minutes. They haven't done one lately, so name it with this link, exactly as written and in place of the title (the link text is the title; don't also write the title): ${topicLink(t)}` : ", naming it. No link."}`);
   }
   if (plan.asks.length) parts.push(`QUESTIONS, last, as their own paragraph (light rewording is fine, keep each one): ${plan.asks.join(" ")}`);
   const prompt = `You write one check-in message that the coach in a family weight loss app sends to ${first} to open the ${plan.part} (${when}). It shows in the chat as the coach's message.
@@ -3328,9 +3330,9 @@ Reply with only the message.`;
   let text = String(res?.text || "").trim().slice(0, 1200);
   if (!text) return null;
   // Keep only the links offered; add one back if it was dropped.
-  text = text.replace(/\[([^\]\n]{1,40})\]\(app:([a-z]+)\)/g, (all, label, k) => (plan.topics.some((t) => t.k === k && t.link) ? all : label));
+  text = text.replace(/\[([^\]\n]{1,60})\]\(app:([a-z]+)\)/g, (all, label, k) => (plan.topics.some((t) => t.k === k && t.link) ? all : label));
   const paras = text.split(/\n{2,}/), at = plan.asks.length && paras.length > 1 ? paras.length - 1 : paras.length;
-  for (const t of plan.topics) if (t.link && !text.includes(`(app:${t.k})`)) paras.splice(at, 0, t.k === "checklist" ? `Here's your ${APP_LINKS.checklist}.` : `When you have five minutes: ${APP_LINKS.lesson}.`);
+  for (const t of plan.topics) if (t.link && !text.includes(`(app:${t.k})`)) paras.splice(at, 0, t.k === "checklist" ? `Here's your ${APP_LINKS.checklist}.` : `When you have five minutes: ${topicLink(t)}.`);
   text = paras.join("\n\n");
   return plan.status ? `${text}\n\n${plan.status}` : text;
 }
@@ -3883,8 +3885,8 @@ function formatted(text) {
   const frag = document.createDocumentFragment();
   const bold = (s) => s.split(/(\*\*[^*]+\*\*)/g).map((part) => (part.startsWith("**") && part.endsWith("**") && part.length > 4 ? h("strong", {}, part.slice(2, -2)) : part));
   // [label](app:checklist|log|lesson) becomes a button that opens that part of the app.
-  const inline = (s) => s.split(/(\[[^\]\n]{1,40}\]\(app:(?:checklist|log|lesson)\))/g).flatMap((part) => {
-    const m = part.match(/^\[([^\]\n]{1,40})\]\(app:(checklist|log|lesson)\)$/);
+  const inline = (s) => s.split(/(\[[^\]\n]{1,60}\]\(app:(?:checklist|log|lesson)\))/g).flatMap((part) => {
+    const m = part.match(/^\[([^\]\n]{1,60})\]\(app:(checklist|log|lesson)\)$/);
     return m ? [h("button", { type: "button", class: "applink", onclick: () => openAppLink(m[2]) }, m[1])] : bold(part);
   });
   // Within a paragraph, runs of bullet or numbered lines become a list and the other lines a paragraph,
