@@ -46,8 +46,7 @@ Feedback tab or the coach's `send_feedback` tool.
   opened (time they first opened the Today tab that day; check-ins only link to the checklist when it
   and yesterday show no use) and worklist (Leah only, Monday to Friday: time "Submit your daily list for work" was ticked)
 - `people/{pid}/meta/library`: foods [{name, kcal, p, c, f, grams?, color?, note?, uses, last}]
-  A food with `recipe: {id, servings, items: [{item, qty, kcal, p, c, f}], at}` is a saved recipe (Today → Daily Log →
-  My recipes, or the coach's `save_recipe` tool); its kcal/p/c/f are per serving, logging never overwrites them, and
+  A food with `recipe: {id, servings, items: [{item, qty, kcal, p, c, f}], at}` is a saved recipe (the Recipes tab, or the coach's `save_recipe` tool); its kcal/p/c/f are per serving, logging never overwrites them, and
   recipes are never trimmed from the 600-food cap.
 - `people/{pid}/meta/program` (Noom-style only): track standard|custom, start {trackKey: date},
   done {lessonKey: {date, at, quiz, reflection}}, progress {lessonKey: {i, n, answers, reflection, at}}

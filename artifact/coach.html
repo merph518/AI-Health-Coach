@@ -487,6 +487,7 @@ html { scrollbar-gutter: stable; scroll-padding-top: calc(var(--hdr-h, 64px) + 4
     <nav class="tabs" role="tablist" aria-label="Views" id="tabs"></nav>
     <section id="v-coach" role="tabpanel"></section>
     <section id="v-today" role="tabpanel" hidden></section>
+    <section id="v-recipes" role="tabpanel" hidden></section>
     <section id="v-history" role="tabpanel" hidden></section>
     <section id="v-settings" role="tabpanel" hidden></section>
     <section id="v-feedback" role="tabpanel" hidden></section>
@@ -503,7 +504,7 @@ const MEALS = ["Breakfast", "Morning Snack", "Lunch", "Afternoon Snack", "Dinner
 const MEAL_RANK = { breakfast: 0, "morning snack": 1, lunch: 2, "afternoon snack": 3, dinner: 4, snack: 5, "evening snack": 5, dessert: 5 };
 const mealRank = (m) => MEAL_RANK[String(m).trim().toLowerCase()] ?? 6;
 const CHECKIN_TIMES = ["07:53", "11:53", "17:53"];
-const TABS = [["coach", "Coach"], ["today", "Today"], ["history", "History"], ["feedback", "Feedback"], ["settings", "Settings"]];
+const TABS = [["coach", "Coach"], ["today", "Today"], ["recipes", "Recipes"], ["history", "History"], ["feedback", "Feedback"], ["settings", "Settings"]];
 const LB_PER_KG = 2.2046226218, CM_PER_IN = 2.54, FLOOR = { male: 1500, female: 1320 };
 
 const fmt = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
@@ -889,6 +890,7 @@ function choose(pid) {
   S.unsub.push(S.db.doc(P("meta", "library")).onSnapshot((snap) => {
     S.library = (snap.exists && Array.isArray(snap.data().foods) ? snap.data().foods : []).map((f) => f && f.color === "red" ? { ...f, color: "orange" } : f);
     renderLibraryList();
+    if (S.tab === "recipes") renderRecipes();
   }, err));
   S.unsub.push(S.db.doc(P("meta", "program")).onSnapshot((snap) => {
     S.program = snap.exists ? snap.data() : {};
@@ -947,6 +949,7 @@ function setTab(id) {
 function renderAll() {
   if (!S.pid) return;
   if (S.tab === "today") renderToday();
+  if (S.tab === "recipes") renderRecipes();
   if (S.tab === "history") renderHistory();
   if (S.tab === "coach") renderDaybar();
 }
@@ -1442,6 +1445,7 @@ function recipesCard() {
           h("button", { class: "btn", type: "button", onclick: () => openLogRecipe(f) }, "Log"))))
       : h("p", { class: "small muted", style: "margin:0" }, "Save things you make often, like a smoothie or a family dinner. Then log a serving with one tap, or just tell the coach you had it."));
 }
+function renderRecipes() { $("v-recipes").replaceChildren(h("div", { class: "stack" }, recipesCard())); }
 function renderLibraryList() { $("libList")?.remove(); } // the old native datalist; suggestions now come from foodCombo
 
 // Past-food suggestions under the Food field: a short, scrollable list instead of the browser's
@@ -1519,7 +1523,7 @@ function renderToday() {
     : h("div", { class: "stack" },
       summary,
       h("section", { class: "card" }, h("h2", {}, "Food today"), foodList(d, true)),
-      todayForms, recipesCard()));
+      todayForms));
 }
 
 // ---------- Noom-style program: 16 weeks, one short lesson a day ----------
@@ -3496,7 +3500,7 @@ Reply with what you logged (item and calories, one line each), the meal's calori
 
 THE APP ITSELF
 - You cannot change how this app looks or works, its settings for other people, or its code. Never offer to, and never say a change was made.
-- Saved recipes: when they say they had one of THEIR SAVED RECIPES, log it as a single item with the recipe's per-serving values (qty = servings eaten). If they describe something they make often, you can offer to save it as a recipe with save_recipe; they can also manage recipes under Today → Daily Log → My recipes.
+- Saved recipes: when they say they had one of THEIR SAVED RECIPES, log it as a single item with the recipe's per-serving values (qty = servings eaten). If they describe something they make often, you can offer to save it as a recipe with save_recipe; they can also manage recipes on the Recipes tab.
 - When they report a problem with the app or ask for a change or new feature, offer to send it to Michael as feedback. Once they say yes (or if they asked you to send it), call send_feedback with a clear summary in their words, then tell them it's on Michael's list and they can follow it on the Feedback tab.
 - Only send what they asked to send. Food, weight and coaching questions are not feedback.
 
