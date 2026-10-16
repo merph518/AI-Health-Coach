@@ -176,6 +176,9 @@ dialog.confirm h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
 dialog.confirm .quote { font-size: 13px; color: var(--ink-2); background: var(--surface-2); border-radius: 10px; padding: 8px 10px; margin-bottom: 16px; overflow-wrap: anywhere; }
 dialog.confirm .acts { display: flex; justify-content: flex-end; gap: 8px; }
 .typing { color: var(--ink-3); font-style: italic; }
+.streaming > :last-child:not(ul, ol)::after, .streaming > :is(ul, ol):last-child > li:last-child::after { content: ""; display: inline-block; width: .5em; height: 1em; margin-left: 2px; vertical-align: -0.15em; border-radius: 2px; background: currentColor; opacity: .35; animation: caret 1s steps(2) infinite; }
+@keyframes caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .streaming *::after { animation: none !important; } }
 .daybar { font-size: 13px; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; }
 #v-coach:not([hidden]) { display: flex; flex-direction: column; min-height: calc(100dvh - var(--hdr-h, 64px) - var(--tabs-h, 60px) - 1px); margin-bottom: -24px; }
 #v-coach > .chat { flex: 1 0 auto; align-content: start; }
@@ -653,6 +656,7 @@ function dayView(date) {
   return {
     date, items, base, active,
     steps: act && doc.steps != null ? Number(doc.steps) : null,
+    exercise: act && doc.exercise != null ? Number(doc.exercise) : null,
     partial: !!doc.partial,
     weight: doc.weight != null ? Number(doc.weight) : null,
     target: base == null ? null : base + (active != null ? Math.round(active * eat) : 0),
@@ -1220,7 +1224,7 @@ function buildTodayForms() {
       if (!(a >= 0) || act.value === "") { toast("Enter active calories."); return; }
       try { await mutateDay(S.today, (d) => { d.active = a; d.partial = part.checked; }); act.value = ""; toast("Saved activity."); } catch (err) { toast(writeError(err)); }
     } },
-      h("label", { class: "field grow" }, "Apple Watch active calories", act),
+      h("label", { class: "field grow" }, S.pid === "michael" ? "Apple Watch active calories" : "Active calories", act),
       h("label", { class: "small muted", style: "display:flex;gap:6px;align-items:center;min-height:40px" }, part, "Day not over"),
       h("button", { class: "btn", type: "submit" }, "Save"));
   }
@@ -1426,7 +1430,7 @@ function renderToday() {
         S.prof.activity
           ? d.active != null
             ? `Target = ${fmt(d.base)} base + ${fmt(d.active * (S.prof.eatBackPct ?? 0.5))} eat-back (${Math.round((S.prof.eatBackPct ?? 0.5) * 100)}% of ${fmt(d.active)} active cal${d.partial ? ", partial day" : ""}).`
-            : `Target = ${fmt(d.base)} base. Today's Apple Watch calories add ${Math.round((S.prof.eatBackPct ?? 0.5) * 100)}% once entered.`
+            : `Target = ${fmt(d.base)} base. Today's ${S.pid === "michael" ? "Apple Watch " : ""}active calories add ${Math.round((S.prof.eatBackPct ?? 0.5) * 100)}% once entered.`
           : `Daily target: ${fmt(d.base)}.`,
         d.weight != null ? ` Weighed in at ${d.weight} lb.` : ""));
   }
@@ -2431,6 +2435,40 @@ function logWithCoach() {
   ta.focus(); // inside the tap, so phones open the keyboard
 }
 // Morning medications: a tap checks it off for the day (and a second tap undoes it). Profile hideMeds hides it.
+// Shown whenever activity tracking is on. Michael's steps arrive from Apple Health; anyone can tap to enter them by hand.
+function stepsTask(d) {
+  if (!S.prof.activity) return null;
+  const goal = Number(S.prof.stepGoal) || 6000, steps = d.steps ?? 0;
+  const ex = d.exercise ? ` · ${fmt(d.exercise)} min exercise` : "";
+  return { ic: "steps", title: steps >= goal ? "Step goal reached" : "Step goal", sub: d.steps == null ? `Goal ${fmt(goal)} steps · tap to log steps or exercise` : `${fmt(steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}${ex}`, done: steps >= goal, meter: steps / goal, onclick: openActivity };
+}
+function openActivity() {
+  const dlg = sheet("Log activity");
+  const d = S.days[S.today] || {};
+  const box = (v, max, ph) => h("input", { type: "number", inputmode: "numeric", min: "0", max, value: v ?? "", placeholder: ph });
+  const steps = box(d.steps, "200000", "e.g. 5200"), ex = box(d.exercise, "1440", "e.g. 30"), act = box(d.active, "6000", "Optional");
+  const part = h("input", { type: "checkbox" });
+  part.checked = d.partial ?? true;
+  const read = (el, max) => { if (el.value === "") return undefined; const n = Math.round(Number(el.value)); return n >= 0 && n <= max ? n : NaN; };
+  const save = h("button", { class: "btn btn-primary", type: "button", onclick: async () => {
+    const v = { steps: read(steps, 200000), exercise: read(ex, 1440), active: read(act, 6000) };
+    if (Object.values(v).some(Number.isNaN)) { toast("Check the numbers."); return; }
+    if (Object.values(v).every((x) => x === undefined)) { toast("Enter steps or exercise minutes."); return; }
+    save.disabled = true;
+    try {
+      await mutateDay(S.today, (x) => { for (const [k, n] of Object.entries(v)) if (n !== undefined) x[k] = n; x.partial = part.checked; });
+      dlg.close(); toast("Activity saved."); renderAll();
+    } catch (err) { toast(writeError(err)); save.disabled = false; }
+  } }, "Save");
+  put(dlg, h("div", { class: "sheet-head" }, h("h2", { class: "serif" }, "Today's activity"), closeX(dlg)),
+    h("p", { class: "small muted" }, `Enter today's totals so far (your step goal is ${fmt(Number(S.prof.stepGoal) || 6000)}). You can also just tell your coach, like "I walked 30 minutes" or "8,000 steps today".`),
+    h("div", { class: "row" }, h("label", { class: "field grow" }, "Steps", steps), h("label", { class: "field grow" }, "Exercise minutes", ex)),
+    h("label", { class: "field" }, "Active calories from your watch", act),
+    h("p", { class: "small muted" }, `Active calories add ${Math.round((S.prof.eatBackPct ?? 0.5) * 100)}% back to today's budget. Leave it blank if you don't have a number.`),
+    h("label", { class: "small muted", style: "display:flex;gap:6px;align-items:center;min-height:40px" }, part, "Day not over yet"),
+    h("div", {}, save));
+  focusSoftly(steps);
+}
 function medsTask() {
   if (S.prof.hideMeds) return null;
   const done = !!S.days[S.today]?.meds;
@@ -2472,10 +2510,7 @@ function basicChecklist(d) {
     { ic: "meal", title: meals.length === 3 ? "Meals logged" : "Log your meals", sub: `${meals.length} of 3 meals logged today${d.items.length ? ` · ${fmt(d.cal)} cal` : ""}`, done: meals.length === 3, meter: meals.length / 3, onclick: logWithCoach },
     { ic: "drop", title: water >= W.goal ? "Water goal met" : "Drink water", sub: `${water} of ${W.goal} ${waterWord(W, W.goal)}`, done: water >= W.goal, meter: water / W.goal, onclick: openWater },
   ];
-  if (S.prof.activity && d.steps != null) {
-    const goal = Number(S.prof.stepGoal) || 6000;
-    tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
-  }
+  tasks.push(stepsTask(d));
   tasks = tasks.filter(Boolean);
   const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
@@ -2500,10 +2535,7 @@ function programCard(d) {
   else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `${(() => { const r = lessonProgress(lessonKey(P0.tk, P0.next.n)); return r ? `Pick up where you left off · screen ${r.i + 1} of ${r.n}` : "Today's lesson · about 5 minutes"; })()}${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
   else tasks.push({ ic: "book", title: "Lesson done", sub: P0.doneToday.length ? P0.doneToday[0].title || "Today's lesson" : "All caught up. Next lesson tomorrow.", done: true, onclick: openLessonList });
   tasks.push({ ic: "drop", title: water >= W.goal ? "Water goal met" : "Drink water", sub: `${water} of ${W.goal} ${waterWord(W, W.goal)}`, done: water >= W.goal, meter: water / W.goal, onclick: openWater });
-  if (S.prof.activity && d.steps != null) {
-    const goal = Number(S.prof.stepGoal) || 6000;
-    tasks.push({ ic: "steps", title: d.steps >= goal ? "Step goal reached" : "Step goal", sub: `${fmt(d.steps)} of ${fmt(goal)} steps${d.partial ? " so far" : ""}`, done: d.steps >= goal, meter: d.steps / goal });
-  }
+  tasks.push(stepsTask(d));
   tasks.push(P0.goal ? { ic: "flag", title: "This week's goal", sub: P0.goal.text, done: true, onclick: openGoal } : { ic: "flag", title: "Set this week's goal", sub: P0.lastGoal ? "Look back at last week, then pick one small goal" : "One small, specific goal for the week", done: false, onclick: openGoal });
   tasks = tasks.filter(Boolean);
   const n = tasks.filter((t) => t.done).length; celebrate(tasks);
@@ -2819,8 +2851,7 @@ function renderSettings() {
     notes: h("textarea", { rows: "4", maxlength: "1000", placeholder: "Anything else your coach should know or do. For example: call me Mike, suggest vegetarian options, don't mention my weight unless I ask." }),
     activity: h("input", { type: "checkbox" }),
     steps: h("input", { type: "number", inputmode: "numeric", min: "1000", max: "50000", step: "500", value: p.stepGoal ?? "", placeholder: "6000" }),
-    // Only Michael tracks activity; the option stays visible if someone already has it on.
-    showActivity: S.pid === "michael" || !!p.activity,
+    showActivity: true,
   };
   f.mode.value = p.mode || "noom";
   f.sex.value = p.sex || "";
@@ -2898,7 +2929,7 @@ function renderSettings() {
   update();
   const save = h("button", { class: "btn btn-primary", type: "submit" }, "Save");
   const levelHint = h("p", { class: "small muted" });
-  const showLevel = () => { levelHint.textContent = f.activity.checked && f.level.value !== "sedentary" ? "Your Apple Watch calories are already added back each day, so Sedentary avoids counting exercise twice." : "Pick what a normal week looks like, not your best week."; };
+  const showLevel = () => { levelHint.textContent = f.activity.checked && f.level.value !== "sedentary" ? "Active calories you log are already added back each day, so Sedentary avoids counting exercise twice." : "Pick what a normal week looks like, not your best week."; };
   f.level.addEventListener("input", showLevel); f.activity.addEventListener("input", showLevel); showLevel();
   const MODES = [
     ["noom", "Noom-style", "Foods get green, yellow or orange by calorie density, your budget has a zone of about 150 calories either way, and you get a daily lesson, a short daily checklist and a weekly goal. Your coach asks questions to help you find your own answers."],
@@ -2943,9 +2974,11 @@ function renderSettings() {
       h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.photos, "Show photos"),
       h("p", { class: "small muted" }, "Changes show right away; Save keeps them for you on every device. Photos are free stock photos from Unsplash.")],
     activity: [
-      h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, "Track Apple Watch activity (eat back half of active calories)"),
+      h("label", { class: "small", style: "display:flex;gap:8px;align-items:center" }, f.activity, S.pid === "michael" ? "Track Apple Watch activity (eat back half of active calories)" : "Track steps and exercise"),
       h("label", { class: "field" }, "Daily step goal", f.steps),
-      h("p", { class: "small muted" }, "Active calories, exercise minutes and steps come in from Health Auto Export by email. Ask the coach to \"import my health data\" anytime.")],
+      h("p", { class: "small muted" }, S.pid === "michael"
+        ? "Active calories, exercise minutes and steps come in from Health Auto Export by email. Ask the coach to \"import my health data\" anytime."
+        : "Adds a step goal to your daily checklist. Tap it to enter steps and exercise minutes, or just tell your coach. If your watch shows active calories, half of them are added back to your budget. Syncing from your watch is coming soon.")],
   };
   v.replaceChildren(h("div", { class: "stack" }, h("form", { class: "card stack", novalidate: true, onsubmit: async (e) => {
     e.preventDefault();
@@ -3303,10 +3336,14 @@ function context(message) {
   if (!p.hideMeds) L.push(`Morning medications: ${S.days[today]?.meds ? "checked off today" : "not checked off yet today"}. Never remind them about medications or ask what they take; if they mention taking them, they can tick it on the Today checklist.`);
   if (p.sex && p.heightIn) L.push(`Profile: ${p.sex}, ${p.heightIn} in${ageNow(p, today) ? `, age ${ageNow(p, today)}` : ""}${p.goalWeight ? `, goal ${p.goalWeight} lb` : ""}.${p.startWeight ? ` Started at ${p.startWeight} lb on ${p.startDate}.` : ""}`);
   if (p.bigPicture) L.push(`Their reason ("big picture"): ${p.bigPicture}`);
+  if (p.activity) {
+    const t = dayView(S.today);
+    L.push(`Activity today: ${t.steps != null ? fmt(t.steps) : "no"} steps of a ${fmt(Number(p.stepGoal) || 6000)} step goal, ${t.exercise ?? "no"} exercise minutes logged${t.partial ? " (day not over)" : ""}.${S.pid === "michael" ? "" : " They enter activity by hand (log_activity, or tapping the step goal on the checklist); syncing from their watch through Google Health is coming soon."}`);
+  }
   if (d.base != null) {
     const z = zoneFor(d.target);
     L.push(p.activity
-      ? `Calorie target: base ${fmt(d.base)} per day, plus ${Math.round((p.eatBackPct ?? 0.5) * 100)}% of that day's Apple Watch active calories (never resting calories).${z ? ` Today's zone: ${fmt(z.low)} to ${fmt(z.high)}.` : ""} Recalculate after about every 20 lb lost.`
+      ? `Calorie target: base ${fmt(d.base)} per day, plus ${Math.round((p.eatBackPct ?? 0.5) * 100)}% of that day's ${S.pid === "michael" ? "Apple Watch " : "logged "}active calories (never resting calories).${z ? ` Today's zone: ${fmt(z.low)} to ${fmt(z.high)}.` : ""} Recalculate after about every 20 lb lost.`
       : `Calorie target: ${fmt(d.base)} per day${z ? ` (zone ${fmt(z.low)} to ${fmt(z.high)})` : ""}. Activity is not tracked, so there is no eat-back.`);
     L.push(`Today so far: ${fmt(d.cal)} eaten of ${fmt(d.target)}, ${fmt(d.target - d.cal)} left. Protein ${d.p} g.`);
     if (y.items.length) L.push(`Yesterday: ${fmt(y.cal)} eaten of ${fmt(y.target ?? y.base)}${p.activity && y.active != null ? ` (active ${fmt(y.active)} cal${y.partial ? ", partial" : ""})` : ""}. Meals: ${[...new Set(y.items.map((i) => i.meal))].join(", ")}.`);
@@ -3356,7 +3393,7 @@ function daySummary(date) {
     date, items: d.items.map((i) => ({ id: i.id, meal: i.meal, item: i.item, qty: i.qty, kcal: i.cal, protein: i.p })),
     total_kcal: d.cal, protein: d.p, carbs: d.c, fat: d.f, target_kcal: d.target,
     left_kcal: d.target == null ? null : d.target - d.cal, weight_lb: d.weight,
-    ...(S.prof.activity ? { active_kcal: d.active, activity_partial: d.partial } : {}),
+    ...(S.prof.activity ? { active_kcal: d.active, steps: d.steps, step_goal: Number(S.prof.stepGoal) || 6000, exercise_min: d.exercise, activity_partial: d.partial } : {}),
   };
 }
 const DATE = { type: "string", description: "YYYY-MM-DD, the person's local date" };
@@ -3674,12 +3711,14 @@ function coachTools(chip) {
   });
   if (S.prof.activity) tools.push({
     name: "log_activity",
-    description: "Record Apple Watch numbers for a date (e.g. from a screenshot). Same-day numbers are partial; replace them later with the full day.",
-    inputSchema: { type: "object", required: ["date", "active_kcal", "partial"], properties: { date: DATE, active_kcal: { type: "number" }, steps: { type: "integer" }, exercise_min: { type: "integer" }, partial: { type: "boolean", description: "true if the day is not over yet" } } },
+    description: (S.pid === "michael" ? "Record Apple Watch numbers for a date (e.g. from a screenshot)." : "Record steps, exercise minutes and (only if they give a number from their watch or phone) active calories for a date. Never estimate active calories.")
+      + " Values are the day's totals, so they replace what's there: if they say they walked another 2,000 steps, add it to the current total from the day summary first. Same-day numbers are partial; replace them later with the full day.",
+    inputSchema: { type: "object", required: ["date", "partial"], properties: { date: DATE, active_kcal: { type: "number" }, steps: { type: "integer" }, exercise_min: { type: "integer" }, partial: { type: "boolean", description: "true if the day is not over yet" } } },
     async execute(a) {
-      const date = vDate(a.date), active = num(a.active_kcal, "active_kcal", 0, 6000);
+      const date = vDate(a.date), active = optNum(a.active_kcal, "active_kcal", 0, 6000);
       const steps = optNum(a.steps, "steps", 0, 200000), ex = optNum(a.exercise_min, "exercise_min", 0, 1440);
-      await mutateDay(date, (d) => { d.active = active; d.partial = !!a.partial; if (steps != null) d.steps = steps; if (ex != null) d.exercise = ex; });
+      if (active == null && steps == null && ex == null) throw new ToolErr("Give steps, exercise_min or active_kcal.");
+      await mutateDay(date, (d) => { if (active != null) d.active = active; d.partial = !!a.partial; if (steps != null) d.steps = steps; if (ex != null) d.exercise = ex; });
       chip("Logged activity");
       return { day: daySummary(date) };
     },
@@ -3911,6 +3950,36 @@ function errorCopy(code) {
     default: return "Something went wrong. Your message is saved; try again.";
   }
 }
+// Reveals streamed text at a steady pace instead of in uneven chunks: a few characters per frame,
+// faster when far behind, always stopping at a word end so words never appear half-typed.
+function typewriter(render) {
+  let target = "", shown = 0, raf = 0, done = null;
+  const clean = (t) => { const n = (t.match(/\*\*/g) || []).length; return n % 2 ? t.slice(0, t.lastIndexOf("**")) : t; };
+  const tick = () => {
+    raf = 0;
+    const back = target.length - shown;
+    if (back > 0) {
+      let next = Math.min(target.length, shown + Math.max(2, Math.ceil(back / 10)));
+      if (next < target.length) { const sp = target.slice(next).search(/\s/); if (sp > 0 && sp < 24) next += sp; }
+      shown = next;
+      render(clean(target.slice(0, shown)), shown < target.length);
+    }
+    if (shown < target.length) raf = requestAnimationFrame(tick);
+    else if (done) { done(); done = null; }
+  };
+  return {
+    push(t) { if (!t || /^thinking/i.test(t.trim()) && t.length < 20) return; if (!t.startsWith(target.slice(0, shown))) shown = 0; target = t; if (!raf) raf = requestAnimationFrame(tick); },
+    finish(t) {
+      if (t != null) target = t;
+      if (shown >= target.length) { render(target, false); return Promise.resolve(); }
+      return new Promise((res) => {
+        const end = () => { if (raf) cancelAnimationFrame(raf); raf = 0; shown = target.length; render(target, false); res(); };
+        done = res; if (!raf) raf = requestAnimationFrame(tick);
+        setTimeout(() => { if (done) { done = null; end(); } }, 1500);
+      });
+    },
+  };
+}
 // `over` sends from somewhere other than the composer (the quick-log sheet): {text, photo, chip(label), onText(text)}.
 // The exchange is still saved to the chat; the composer and any check-in are left alone.
 async function sendMessage(over) {
@@ -3953,11 +4022,12 @@ async function sendMessage(over) {
 
   S.ctl = new AbortController();
   let reply = "", error = null;
+  const tw = typewriter((t, more) => { body.replaceChildren(formatted(t)); body.classList.toggle("streaming", more); scrollChat(); over?.onText?.(t); });
   try {
     const res = await S.sample(turns, {
       tools: coachTools(chip), signal: S.ctl.signal, modelTier: S.prof.coachTier === "default" ? "default" : "quick",
       ...(photo ? { images: [photo] } : {}),
-      onText: ({ text: t }) => { reply = t; body.replaceChildren(formatted(t)); scrollChat(); over?.onText?.(t); },
+      onText: ({ text: t }) => { reply = t; tw.push(t); },
     });
     reply = res.text;
     if (res.truncated) reply += "\n\n(Cut short. Ask for less at a time.)";
@@ -3966,6 +4036,7 @@ async function sendMessage(over) {
     if (e?.code !== "cancelled") error = errorCopy(e?.code);
   }
   const finalText = [reply.trim(), error].filter(Boolean).join("\n\n");
+  if (reply.trim()) await tw.finish(reply.trim());
   if (finalText || chips.length) {
     try {
       await mutateChat(date, (c) => { c.messages.push({ role: "assistant", text: finalText || "Done.", tools: chips, at: Date.now(), ...(error ? { error: true } : {}) }); });
