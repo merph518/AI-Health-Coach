@@ -3,8 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Release signing comes from the environment (CI decodes a keystore secret). Every build must use the same
-// key, or Android refuses to install the update over the old app (and the claude.ai sign-in is lost).
+// Release signing comes from the environment (release.sh reads the key kept outside the repo). Every build
+// must use the same key, or Android refuses to install the update over the old app (and the claude.ai
+// sign-in is lost).
 val keystorePath: String? = System.getenv("SIGNING_KEYSTORE")
 
 android {
@@ -16,7 +17,10 @@ android {
         applicationId = "com.fagerteam.coach"
         minSdk = 28
         targetSdk = 36
-        versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
+        // release.sh counts up from the last released version, kept in version.properties.
+        versionCode = (System.getenv("VERSION_CODE")
+            ?: rootProject.file("version.properties").readLines().firstNotNullOfOrNull { it.substringAfter("versionCode=", "").ifBlank { null } }
+            ?: "1").toInt()
         versionName = System.getenv("VERSION_NAME") ?: "0.1"
         // The coach artifact the app opens. COACH_URL in the environment points a build at another copy
         // (the private test artifact) without touching the live one.
@@ -47,7 +51,7 @@ android {
     }
 
     lint {
-        // CI fails on any lint warning, so new ones get fixed or explicitly suppressed.
+        // Any lint warning fails the build, so new ones get fixed or explicitly suppressed.
         warningsAsErrors = true
         abortOnError = true
         // "A newer version is available" depends on what Google publishes that day, not on this code, so it is

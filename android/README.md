@@ -45,8 +45,7 @@ automatic syncs ask only the first time. An iPhone app can inject a `window.Fage
 
 ## Building
 
-CI builds the APK on every push that touches `android/` (Actions → **Android app** → artifact
-`fagerteam-coach-apk`). Locally, on Ubuntu:
+The app is built on this machine (it's only for our household, so there's no CI). On Ubuntu:
 
 ```bash
 sudo apt install openjdk-17-jdk-headless google-android-cmdline-tools-13.0-installer google-android-platform-36-installer google-android-build-tools-36.0.0-installer google-android-platform-tools-installer
@@ -58,26 +57,34 @@ Then in this folder, with `local.properties` holding `sdk.dir=/usr/lib/android-s
 JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleDebug lintDebug
 ```
 
-Gradle 8.14 can't run on newer JDKs, hence the `JAVA_HOME`. Lint should report no issues. Ubuntu's SDK
-packages stop at platform 36, so `androidx.core` stays at 1.18 (1.19 needs compileSdk 37 and AGP 9.1). The wrapper fetches Gradle itself (checksum
-pinned in `gradle/wrapper/gradle-wrapper.properties`). The APK lands in `app/build/outputs/apk/debug/`;
-`adb install -r` it onto a phone with USB debugging on.
+Gradle 8.14 can't run on newer JDKs, hence the `JAVA_HOME`. Lint should report no issues, and any warning
+fails the build. Ubuntu's SDK packages stop at platform 36, so `androidx.core` stays at 1.18 (1.19 needs
+compileSdk 37 and AGP 9.1). The wrapper fetches Gradle itself (checksum pinned in
+`gradle/wrapper/gradle-wrapper.properties`).
 
-### Signing
+### Releases for the phones
 
-Every build installed on a phone must use the same key, or Android won't update the app in place (and
-uninstalling loses the claude.ai sign-in). Make a key once and keep it safe:
+Every APK installed on Leah's and Eve's phones must be signed with the same key, or Android won't update
+the app in place (and uninstalling loses the claude.ai sign-in). Make the key once:
 
 ```bash
-keytool -genkeypair -v -keystore release.jks -alias coach -keyalg RSA -keysize 4096 -validity 36500
+./release.sh init
 ```
 
-Then add repo secrets `ANDROID_KEYSTORE_B64` (`base64 -w0 release.jks`), `ANDROID_KEYSTORE_PASSWORD`,
-`ANDROID_KEY_ALIAS` (`coach`) and `ANDROID_KEY_PASSWORD`. With the secrets set, CI builds a signed release
-APK; without them, a debug APK, which is only for a one-off try: it's signed with a throwaway key, so a
-later release can't install over it (uninstall it first, and sign in again).
+It goes in `~/.local/share/fagerteam-coach/` with its password, readable only by you. **Back that folder
+up**; losing it means reinstalling the app on both phones. Then each release is:
 
-To point a build at the private test artifact instead of the live coach, set `COACH_URL` when building:
+```bash
+./release.sh
+```
+
+It lints, builds the next version into `app/build/outputs/apk/release/app-release.apk`, and bumps
+`version.properties`. Commit that file so the next release counts up from it.
+
+A debug APK (`assembleDebug`) is only for a quick try on your own phone: it's signed with a different key,
+so a release can't install over it.
+
+To point a build at the private test artifact instead of the live coach, set `COACH_URL`:
 
 ```bash
 COACH_URL=https://claude.ai/artifact/Dyemov2twz4ziBgDTHTZrn JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleDebug
