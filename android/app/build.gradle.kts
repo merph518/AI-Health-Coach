@@ -9,13 +9,13 @@ val keystorePath: String? = System.getenv("SIGNING_KEYSTORE")
 
 android {
     namespace = "com.fagerteam.coach"
-    compileSdk = 35
-    buildToolsVersion = "35.0.0"
+    compileSdk = 36
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         applicationId = "com.fagerteam.coach"
         minSdk = 28
-        targetSdk = 35
+        targetSdk = 36
         versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
         versionName = System.getenv("VERSION_NAME") ?: "0.1"
         // The coach artifact the app opens.
@@ -54,9 +54,11 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.activity:activity-ktx:1.9.3")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.webkit:webkit:1.12.1")
-    implementation("androidx.health.connect:connect-client:1.1.0-alpha11")
+    // core 1.19+ needs compileSdk 37 and AGP 9.1, and Ubuntu's apt SDK packages stop at platform 36.
+    //noinspection GradleDependency
+    implementation("androidx.core:core-ktx:1.18.0")
+    implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.webkit:webkit:1.17.1")
+    implementation("androidx.health.connect:connect-client:1.1.0")
 }

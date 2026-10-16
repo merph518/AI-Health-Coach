@@ -41,16 +41,17 @@ CI builds the APK on every push that touches `android/` (Actions → **Android a
 `fagerteam-coach-apk`). Locally, on Ubuntu:
 
 ```bash
-sudo apt install openjdk-17-jdk-headless google-android-cmdline-tools-13.0-installer google-android-platform-35-installer google-android-build-tools-35.0.0-installer google-android-platform-tools-installer
+sudo apt install openjdk-17-jdk-headless google-android-cmdline-tools-13.0-installer google-android-platform-36-installer google-android-build-tools-36.0.0-installer google-android-platform-tools-installer
 ```
 
 Then in this folder, with `local.properties` holding `sdk.dir=/usr/lib/android-sdk`:
 
 ```bash
-JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleDebug
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleDebug lintDebug
 ```
 
-Gradle 8.10 can't run on newer JDKs, hence the `JAVA_HOME`. The wrapper fetches Gradle itself (checksum
+Gradle 8.14 can't run on newer JDKs, hence the `JAVA_HOME`. Lint should report no issues. Ubuntu's SDK
+packages stop at platform 36, so `androidx.core` stays at 1.18 (1.19 needs compileSdk 37 and AGP 9.1). The wrapper fetches Gradle itself (checksum
 pinned in `gradle/wrapper/gradle-wrapper.properties`). The APK lands in `app/build/outputs/apk/debug/`;
 `adb install -r` it onto a phone with USB debugging on.
 

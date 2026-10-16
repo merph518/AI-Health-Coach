@@ -9,16 +9,24 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -60,7 +68,7 @@ class MainActivity : ComponentActivity() {
     private val prefs by lazy { getSharedPreferences("coach", MODE_PRIVATE) }
     private var owner: String?
         get() = prefs.getString("owner", null)
-        set(v) { prefs.edit().putString("owner", v).apply() }
+        set(v) { prefs.edit { putString("owner", v) } }
 
     // The artifact frame's reply channel, kept so the app can tell the page it came back to the front.
     private var page: JavaScriptReplyProxy? = null
@@ -105,15 +113,7 @@ class MainActivity : ComponentActivity() {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(web, true) // the artifact runs in a frame on another origin
         }
-        web.webViewClient = object : WebViewClient() {
-            // The app only shows claude.ai. Anything else (links in a coach message, Google sign-in) opens
-            // in the phone's browser.
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                if (!request.isForMainFrame || isClaude(request.url)) return false
-                openOutside(request.url)
-                return true
-            }
-        }
+        web.webViewClient = CoachClient()
         web.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
                 fileCallback?.onReceiveValue(null)
@@ -132,7 +132,7 @@ class MainActivity : ComponentActivity() {
             // "*" because the artifact runs in a sandboxed frame whose origin isn't claude.ai. The listener
             // only answers while the top page is claude.ai, and only with steps, active calories and exercise.
             WebViewCompat.addWebMessageListener(web, "FagerHealth", setOf("*")) { view, message, origin, _, reply ->
-                if (!isClaude(Uri.parse(view.url ?: ""))) return@addWebMessageListener
+                if (!isClaude((view.url ?: "").toUri())) return@addWebMessageListener
                 val req = runCatching { JSONObject(message.data ?: "") }.getOrNull() ?: return@addWebMessageListener
                 if (req.optString("type") != "health.read") return@addWebMessageListener
                 Log.i(TAG, "health.read from $origin")
@@ -175,6 +175,31 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
+    /** Keeps the app on claude.ai and survives a WebView renderer crash. */
+    // onRenderProcessGone is implemented below; the androidx.webkit check also flags the
+    // WebViewClient() superclass call of any subclass, so it can't be satisfied otherwise.
+    @SuppressLint("MissingOnRenderProcessGone")
+    private inner class CoachClient : WebViewClient() {
+        // The app only shows claude.ai. Anything else (links in a coach message, Google sign-in) opens
+        // in the phone's browser.
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            if (!request.isForMainFrame || isClaude(request.url)) return false
+            openOutside(request.url)
+            return true
+        }
+
+        // The WebView's renderer crashed or was killed for memory. The view can't be used again, so
+        // drop it and rebuild the screen (the page reloads; the claude.ai sign-in is in cookies).
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            Log.w(TAG, "WebView renderer gone (crashed: ${detail.didCrash()})")
+            (view.parent as? ViewGroup)?.removeView(view)
+            view.destroy()
+            page = null
+            recreate()
+            return true
+        }
+    }
+
     private fun wake() {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
         runCatching { page?.postMessage(JSONObject().put("type", "health.wake").toString()) }
@@ -193,17 +218,30 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // "Whose phone is this?": the explanation, then one radio button per person (a plain choice list
+    // can't show a message too).
     private fun chooseOwner() {
-        val current = OWNERS.indexOfFirst { it.first == owner }
-        AlertDialog.Builder(this)
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val group = RadioGroup(this)
+        OWNERS.forEachIndexed { i, (id, name) ->
+            group.addView(RadioButton(this).apply { this.id = i + 1; text = name; isChecked = id == owner })
+        }
+        val view = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(TextView(this@MainActivity).apply { setText(R.string.owner_message) })
+            addView(group)
+        }
+        val dialog = AlertDialog.Builder(this)
             .setTitle(R.string.owner_title)
-            .setSingleChoiceItems(OWNERS.map { it.second }.toTypedArray(), current) { dialog, which ->
-                owner = OWNERS[which].first
-                dialog.dismiss()
-                wake()
-            }
+            .setView(view)
             .setCancelable(owner != null)
             .show()
+        group.setOnCheckedChangeListener { _, checked ->
+            owner = OWNERS[checked - 1].first
+            dialog.dismiss()
+            wake()
+        }
     }
 
     /** The phone's picker for photos, with the camera offered too when the page asks for an image. */
@@ -234,14 +272,14 @@ class MainActivity : ComponentActivity() {
         when (health.sdkStatus()) {
             HealthConnectClient.SDK_AVAILABLE -> Unit
             HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> {
-                if (ask) openOutside(Uri.parse("market://details?id=${HealthReader.PROVIDER}&url=healthconnect%3A%2F%2Fonboarding"))
+                if (ask) openOutside("market://details?id=${HealthReader.PROVIDER}&url=healthconnect%3A%2F%2Fonboarding".toUri())
                 return error("unavailable", "Health Connect needs to be installed or updated.")
             }
             else -> return error("unavailable", "Health Connect isn't available on this phone.")
         }
         if (!health.granted().containsAll(HealthReader.PERMISSIONS)) {
             if (!ask) return error("permission")
-            prefs.edit().putBoolean("asked", true).apply()
+            prefs.edit { putBoolean("asked", true) }
             val wait = CompletableDeferred<Set<String>>()
             permissionWait = wait
             permissionLauncher.launch(HealthReader.PERMISSIONS)
