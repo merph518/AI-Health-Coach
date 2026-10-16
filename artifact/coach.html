@@ -85,8 +85,12 @@ html[data-bgimg="on"][data-theme] .subtab, html[data-bgimg="on"][data-theme] .bt
 html[data-bgimg="on"][data-theme] .task { box-shadow: 0 2px 4px rgba(0, 0, 0, .28), 0 8px 28px rgba(0, 0, 0, .32); }
 html[data-bgimg="on"][data-theme] .avatar { box-shadow: 0 2px 6px rgba(0, 0, 0, .5); }
 html[data-bgimg="on"][data-theme] .card .btn, html[data-bgimg="on"][data-theme] .card .task, html[data-bgimg="on"][data-theme] .msg .btn { box-shadow: 0 2px 4px rgba(0, 0, 0, .16); }
-/* Headings that sit right on the page background turn white with a shadow when it's dark (see bgShade). */
-html[data-bgdark="on"] .onbg { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .6), 0 2px 12px rgba(0, 0, 0, .45); }
+/* Text that sits right on the page background (headings, chat times) picks white or near-black, whichever
+   contrasts more with that person's background (see bgShade), with a halo of the opposite color so it
+   still reads over the busy or uneven parts of a photo. */
+html[data-bgshade="dark"] .onbg { color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .75), 0 0 6px rgba(0, 0, 0, .55), 0 2px 12px rgba(0, 0, 0, .45); }
+html[data-bgshade="light"][data-bgimg="on"] .onbg, html[data-bgshade="light"][data-bgcustom] .onbg { color: #161616; text-shadow: 0 0 1px rgba(255, 255, 255, .95), 0 0 5px rgba(255, 255, 255, .85), 0 0 14px rgba(255, 255, 255, .6); }
+html[data-bgimg="on"] .mtime, html[data-bgcustom] .mtime { font-weight: 600; }
 html[data-bgimg="on"] .tab { text-shadow: 0 2px 4px color-mix(in srgb, var(--bg) 100%, transparent); }
 html[data-bgimg="on"] .composer { margin: 0 -16px; padding: 10px 16px calc(12px + env(safe-area-inset-bottom)); border-top-color: color-mix(in srgb, var(--border) 60%, transparent); }
 html[data-bgimg="on"][data-theme] header.top, html[data-bgimg="on"][data-theme] .tabs, html[data-bgimg="on"] .composer { background: color-mix(in srgb, var(--bg) 80%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
@@ -169,7 +173,7 @@ details.day > summary::-webkit-details-marker { display: none; }
 .mwrap { display: grid; gap: 6px; max-width: 88%; }
 .mwrap.user { justify-self: end; justify-items: end; }
 .mwrap.bot { justify-self: start; justify-items: start; }
-.mtime { font-size: 11px; line-height: 1; color: var(--ink-3); padding: 0 6px; margin-top: -2px; font-variant-numeric: tabular-nums; }
+.mtime { font-size: 11px; line-height: 1; color: var(--ink-2); padding: 0 6px; margin-top: -2px; font-variant-numeric: tabular-nums; }
 .mwrap .msg { max-width: none; min-width: 0; touch-action: pan-y; transition: transform .18s, opacity .18s; }
 dialog.confirm { margin: auto; width: min(340px, calc(100vw - 32px)); padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
 dialog.confirm::backdrop { background: rgba(0,0,0,.6); }
@@ -2132,13 +2136,16 @@ function lum(hex) {
   const ch = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
   return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
 }
-// Marks the page background as dark (data-bgdark) so text on it can switch to white. With a picture,
-// that's its average brightness under the 30% wash of the background color laid over it.
+// Marks the page background dark or light (data-bgshade) so text on it can use whichever of white or
+// near-black contrasts more: the crossover is a luminance of about 0.18. With a picture, that's its average
+// brightness under the 30% wash of the background color laid over it. data-bgcustom marks a picture or a
+// custom color, where the theme's gray text can't be trusted to contrast.
 let shadeRun = 0;
 function bgShade(img, bg) {
   const root = document.documentElement, run = ++shadeRun;
   const hex = okHex(bg) || okHex(getComputedStyle(root).getPropertyValue("--bg").trim()) || (root.dataset.theme === "dark" ? "#151515" : "#f5f3ee");
-  const set = (l) => { if (run === shadeRun) { if (l < 0.18) root.dataset.bgdark = "on"; else delete root.dataset.bgdark; } };
+  const set = (l) => { if (run === shadeRun) root.dataset.bgshade = l < 0.18 ? "dark" : "light"; };
+  if (img || okHex(bg)) root.dataset.bgcustom = ""; else delete root.dataset.bgcustom;
   set(lum(hex));
   if (!img) return;
   const im = new Image();
@@ -3190,6 +3197,7 @@ function renderFeedbackList() {
 }
 
 // ---------- check-ins ----------
+const CHECKIN_SEEN = new Map();
 function composeCheckin() {
   const now = clockIn(tz());
   const slotTime = [...CHECKIN_TIMES].reverse().find((t) => t <= now);
@@ -3215,7 +3223,10 @@ function composeCheckin() {
   const target = d.target;
   const status = target == null ? "" : `\n\nSo far today: ${fmt(d.cal)} of ${fmt(target)} cal, ${fmt(target - d.cal)} left.`;
   const lead = S.prof.mode === "noom" ? `${hello}, ${S.prof.name}. Quick check-in when you have a minute.` : `${hello}, ${S.prof.name}.`;
-  return { slot: slotTime, text: `${lead} ${asks.join(" ")}${status}` };
+  // When it first appeared, so its time doesn't tick forward on every render; saved with the check-in.
+  const seen = `${S.pid}/${S.today}/${slotTime}`;
+  if (!CHECKIN_SEEN.has(seen)) CHECKIN_SEEN.set(seen, Date.now());
+  return { slot: slotTime, text: `${lead} ${asks.join(" ")}${status}`, at: CHECKIN_SEEN.get(seen) };
 }
 
 // ---------- coach: prompt ----------
@@ -3762,12 +3773,14 @@ function bubble(m) {
     m.tools?.length ? h("div", { class: "chips" }, m.tools.map((t) => h("span", {}, "✓ " + t))) : null,
     formatted(m.text || ""));
 }
+function msgTime(ms) {
+  const at = Number(ms) ? new Date(Number(ms)) : null;
+  return at ? h("time", { class: "mtime onbg", datetime: at.toISOString(), title: at.toLocaleString() }, at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) : null;
+}
 // A saved message: swipe it sideways (touch) and confirm to remove it from the chat log.
 function savedBubble(m) {
   const b = bubble(m);
-  const at = Number(m.at) ? new Date(Number(m.at)) : null;
-  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, b,
-    at ? h("time", { class: "mtime onbg", datetime: at.toISOString(), title: at.toLocaleString() }, at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })) : null);
+  const wrap = h("div", { class: `mwrap ${m.role === "user" ? "user" : "bot"}` }, b, msgTime(m.at));
   const ask = async () => {
     if (S.busy || document.querySelector("dialog.confirm")) return;
     const ok = await confirmPopup("Are you sure you want to delete this message?", snippet(m.text) || (m.photo ? "📷 Photo" : ""), "Delete");
@@ -3897,7 +3910,7 @@ function renderChat() {
   }
   const ci = !S.busy && composeCheckin();
   S.checkin = ci || null;
-  if (ci) kids.push(chatRow("bot", bubble({ role: "assistant", kind: "checkin", slot: ci.slot, text: ci.text })));
+  if (ci) kids.push(chatRow("bot", h("div", { class: "mwrap bot" }, bubble({ role: "assistant", kind: "checkin", slot: ci.slot, text: ci.text }), msgTime(ci.at))));
   if (S.pending) kids.push(S.pending.el);
   coachEls.list.replaceChildren(...kids);
   fitHint(composerHint());
@@ -4011,7 +4024,7 @@ async function sendMessage(over) {
   }
   try {
     await mutateChat(date, (c) => {
-      if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", slot: checkin.slot, text: checkin.text, at: Date.now() - 1 }); }
+      if (checkin && !c.checkins.includes(checkin.slot)) { c.checkins.push(checkin.slot); c.messages.push({ role: "assistant", kind: "checkin", slot: checkin.slot, text: checkin.text, at: Math.min(checkin.at || Infinity, userMsg.at - 1, Date.now() - 1) }); }
       c.messages.push(userMsg);
       if (c.messages.length > 200) c.messages.splice(0, c.messages.length - 200);
     });
