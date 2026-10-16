@@ -1,6 +1,6 @@
 # Fagerteam Coach for Android
 
-A thin app around the coach artifact (issue #8): a full-screen WebView that opens
+A thin app around the coach artifact: a full-screen WebView that opens
 https://claude.ai/artifact/HsXvPzyvfoNbwfW9s5TF7y, plus a bridge that reads **steps, active calories and
 exercise minutes** from Health Connect for Leah's and Eve's phones. All data stays in the artifact db: the
 page saves the numbers through its own `db` access, as the signed-in person. The app stores only whose
@@ -22,7 +22,7 @@ phone it is.
 - Sync runs when the coach loads, when the app comes back to the front, and from Settings → Activity →
   **Sync now**. Today is saved as a partial day.
 
-### Bridge messages (shared with the iPhone app, #9)
+### Bridge messages (shared with the iPhone app)
 
 ```
 page → app  {type: "health.read", id, dates: ["YYYY-MM-DD", …], ask?: bool}
@@ -92,7 +92,7 @@ COACH_URL=https://claude.ai/artifact/Dyemov2twz4ziBgDTHTZrn JAVA_HOME=/usr/lib/j
    allow steps, active calories and exercise in Health Connect.
 5. Make sure their watch's app (Samsung Health, Fitbit, Pixel Watch…) shares data with Health Connect.
 
-## Still to check on a real phone (the spike in #8)
+## Still to check on a real phone
 
 1. claude.ai email sign-in, the artifact's `db` and `sample`, and photo upload work inside the WebView.
 2. The bridge reaches the artifact frame (logged as `health.read from <origin>`, tag `FagerCoach`). In a
