@@ -24,10 +24,12 @@ if [ "${1:-}" = init ]; then
 fi
 
 if [ ! -e "$KEYSTORE" ] || [ ! -e "$PASSFILE" ]; then echo "No signing key in $KEYS; run ./release.sh init first." >&2; exit 1; fi
+# A release is built from committed code only, so each version on the phones matches a commit.
+if [ -n "$(git status --porcelain -- .)" ]; then echo "android/ has uncommitted changes; commit them first." >&2; exit 1; fi
 code=$(( $(sed -n 's/^versionCode=//p' version.properties) + 1 ))
 pw="$(cat "$PASSFILE")"
 SIGNING_KEYSTORE="$KEYSTORE" SIGNING_STORE_PASSWORD="$pw" SIGNING_KEY_ALIAS=coach SIGNING_KEY_PASSWORD="$pw" \
-  VERSION_CODE="$code" VERSION_NAME="0.1.$code" ./gradlew --quiet lintRelease assembleRelease
+  VERSION_CODE="$code" ./gradlew --quiet lintRelease assembleRelease
 # Saved only after a good build; commit it so the next build counts up from here.
 printf 'versionCode=%s\n' "$code" > version.properties
 echo "Built version 0.1.$code: $(pwd)/app/build/outputs/apk/release/app-release.apk"

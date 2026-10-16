@@ -79,7 +79,8 @@ up**; losing it means reinstalling the app on both phones. Then each release is:
 ```
 
 It lints, builds the next version into `app/build/outputs/apk/release/app-release.apk`, and bumps
-`version.properties`. Commit that file so the next release counts up from it.
+`version.properties`. Commit that file so the next release counts up from it; `release.sh` refuses to
+build while anything in `android/` is uncommitted, so every version on the phones matches a commit.
 
 A debug APK (`assembleDebug`) is only for a quick try on your own phone: it's signed with a different key,
 so a release can't install over it.

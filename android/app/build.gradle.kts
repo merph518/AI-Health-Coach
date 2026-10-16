@@ -21,7 +21,7 @@ android {
         versionCode = (System.getenv("VERSION_CODE")
             ?: rootProject.file("version.properties").readLines().firstNotNullOfOrNull { it.substringAfter("versionCode=", "").ifBlank { null } }
             ?: "1").toInt()
-        versionName = System.getenv("VERSION_NAME") ?: "0.1"
+        versionName = "0.1.$versionCode"
         // The coach artifact the app opens. COACH_URL in the environment points a build at another copy
         // (the private test artifact) without touching the live one.
         val coachUrl = System.getenv("COACH_URL") ?: "https://claude.ai/artifact/HsXvPzyvfoNbwfW9s5TF7y"
