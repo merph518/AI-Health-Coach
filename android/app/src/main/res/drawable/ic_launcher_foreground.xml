@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A sprout, like the coach's default avatar. Drawn inside the 66dp safe zone of the 108dp icon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M52,76 L52,54 C52,44 45,36 34,36 C34,47 41,54 52,54 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M52,76 L56,76 L56,50 C56,38 64,30 76,30 C76,42 68,50 56,50 L56,58 L52,58 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M40,76 L68,76 C68,80 66,82 62,82 L46,82 C42,82 40,80 40,76 Z" />
+</vector>
