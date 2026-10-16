@@ -98,8 +98,8 @@ gh issue edit <N> --add-label "In Progress"
 gh issue view <N> --json labels --jq '[.labels[].name] | join(", ")'
 ```
 
-`--force` creates the label, or resets its color and description if it exists. If the edit still
-fails, fix that before going on.
+`--force` creates the label, or resets its color and description if it exists.
+If the edit still fails, fix that before going on.
 
 ## 3. Branch in an isolated worktree
 
