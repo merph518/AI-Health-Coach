@@ -3715,8 +3715,12 @@ const healthTakes = (cur, k, n) => n != null && cur[k] !== n && (cur[k] == null 
 async function healthSync(force = false, ask = false) {
   if (!healthBridge() || !S.pid || !S.prof?.activity || S.canWrite === false || !S.loaded?.has("days")) return null;
   if (document.visibilityState !== "visible") return null;
-  // Sync now waits for an automatic sync already running, then asks again with `ask`.
-  while (HEALTH.busy) { const b = HEALTH.busy; if (!ask) return b; await b; }
+  // Sync now waits for an automatic sync already running, then starts over (the person may have changed).
+  if (HEALTH.busy) {
+    if (!ask) return HEALTH.busy;
+    await HEALTH.busy;
+    return healthSync(force, ask);
+  }
   if (!force && Date.now() - HEALTH.at < 60e3) return null;
   const pid = S.pid, today = S.today, gen = HEALTH.gen, dates = Array.from({ length: 8 }, (_, i) => addDays(today, -i));
   const run = (async () => {
