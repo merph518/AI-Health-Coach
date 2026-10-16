@@ -176,6 +176,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun wake() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
         runCatching { page?.postMessage(JSONObject().put("type", "health.wake").toString()) }
     }
 

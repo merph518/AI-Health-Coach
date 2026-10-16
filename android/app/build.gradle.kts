@@ -10,6 +10,7 @@ val keystorePath: String? = System.getenv("SIGNING_KEYSTORE")
 android {
     namespace = "com.fagerteam.coach"
     compileSdk = 35
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.fagerteam.coach"

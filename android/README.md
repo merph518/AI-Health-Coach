@@ -38,8 +38,21 @@ automatic syncs ask only the first time. An iPhone app can inject a `window.Fage
 ## Building
 
 CI builds the APK on every push that touches `android/` (Actions → **Android app** → artifact
-`fagerteam-coach-apk`). Locally: JDK 17, the Android SDK (platform 35) and Gradle 8.10, then
-`gradle assembleDebug` in this folder.
+`fagerteam-coach-apk`). Locally, on Ubuntu:
+
+```bash
+sudo apt install openjdk-17-jdk-headless google-android-cmdline-tools-13.0-installer google-android-platform-35-installer google-android-build-tools-35.0.0-installer google-android-platform-tools-installer
+```
+
+Then in this folder, with `local.properties` holding `sdk.dir=/usr/lib/android-sdk`:
+
+```bash
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew assembleDebug
+```
+
+Gradle 8.10 can't run on newer JDKs, hence the `JAVA_HOME`. The wrapper fetches Gradle itself (checksum
+pinned in `gradle/wrapper/gradle-wrapper.properties`). The APK lands in `app/build/outputs/apk/debug/`;
+`adb install -r` it onto a phone with USB debugging on.
 
 ### Signing
 
