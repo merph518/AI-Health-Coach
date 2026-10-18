@@ -4450,7 +4450,7 @@ async function sendMessage(over) {
   const text = over ? String(over.text || "").trim() : E.ta.value.trim();
   const photos = over ? (over.photo ? [over.photo] : []) : S.photos.map((p) => p.file);
   if ((!text && !photos.length) || S.busy || !S.sample) return null;
-  if (todayStr() !== S.today) { choose(S.pid); toast("It's a new day. Send again."); return null; }
+  if (todayStr() !== S.today) { choose(S.pid); toast(photos.length ? "It's a new day. Add your photos again and send." : "It's a new day. Send again."); return null; }
   S.busy = true;
   E.send.disabled = true; E.cam.disabled = true; E.stop.hidden = false;
   const date = S.today;
