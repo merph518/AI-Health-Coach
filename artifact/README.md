@@ -70,10 +70,12 @@ in `artifact/photos/`); publish them with the Artifact `files` parameter.
   Only the artifact owner (Michael) gets the person switcher; any other account is tied to the person it first
   picks (never Michael) and opens straight to them. To re-link an account, delete its doc. This is an app-level
   lock, not a db access rule.
-- `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, error?, slot?, mentions?}],
+- `people/{pid}/chat/{YYYY-MM-DD}`: messages [{role, text, at, kind?, tools?, photo?, photos?, error?, slot?, mentions?}],
   checkins [slot times already shown]. At each check-in slot (07:53, 11:53, 17:53 local) the page has Claude
   write a check-in from their progress, today's checklist and lesson, and saves it at once as a
   `kind: "checkin"` message whose `mentions` (progress|checklist|lesson|goal; goal is a question about this week's goal from the day after it was set, or an invitation to set one when there isn't one) keep each topic to once a day.
+  `photo: true` only records that photos were sent (the pictures are never kept); `photos` is how many (up to 4 a message;
+  messages from before it existed have `photo` alone and meant one).
   Messages may contain in-app links `[label](app:checklist|log|lesson|goal)`, which render as buttons.
 
 Michael's history was seeded once from `data/app.db` (the Next.js app's import of the
