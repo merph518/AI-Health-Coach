@@ -590,7 +590,7 @@ function ageNow(prof, date) {
 const S = {
   db: null, sample: null, canWrite: null, sampleLimits: null,
   people: {}, pid: null, prof: null, days: {}, library: [], chat: { messages: [], checkins: [] },
-  today: null, unsub: [], tab: "coach", pending: null, busy: false, photo: null, ctl: null,
+  today: null, unsub: [], tab: "coach", pending: null, busy: false, photos: [], ctl: null,
 };
 const P = (...parts) => ["people", S.pid, ...parts].join("/");
 const tz = () => S.prof?.timezone || undefined;
@@ -864,6 +864,7 @@ function showPicker() {
 
 function choose(pid) {
   if (!mayUse(pid)) return;
+  clearPhotos();
   for (const u of S.unsub) u();
   S.unsub = [];
   S.pid = pid;
@@ -1788,6 +1789,17 @@ function photoPick(file) {
       h("button", { class: "btn", type: "button", onclick: () => go(false) }, "🖼️ Choose from your photos")));
   };
 }
+// Most photos in one message: the platform's per-call limit, and no more than this.
+const CHAT_PHOTOS = 4;
+const chatPhotoMax = () => Math.min(CHAT_PHOTOS, S.sampleLimits?.images?.maxCount ?? CHAT_PHOTOS);
+function clearPhotos() {
+  for (const p of S.photos) URL.revokeObjectURL(p.url);
+  S.photos = [];
+  coachEls?.drawTray();
+}
+// A saved message records only that photos were sent (never the pictures); older ones have no count and meant one.
+const photoCount = (m) => (m.photo ? Math.max(1, Number(m.photos) || 1) : 0);
+const photoLabel = (n) => (n > 1 ? `📷 ${n} photos` : "📷 Photo");
 // The photo types Claude accepts; a gallery pick on Android can be something else (HEIC, video).
 function photoTypeOk(f, imgs) {
   if (!imgs || !f.type || imgs.mediaTypes.includes(f.type)) return true;
@@ -3230,7 +3242,7 @@ async function sendFeedback(kind, text, photos = []) {
 }
 function openPhoto(url) {
   const dlg = sheet("Photo");
-  put(dlg, h("div", { class: "sheet-head" }, h("span", {}), closeX(dlg)), h("img", { class: "fbfull", src: url, alt: "Feedback photo" }));
+  put(dlg, h("div", { class: "sheet-head" }, h("span", {}), closeX(dlg)), h("img", { class: "fbfull", src: url, alt: "Photo" }));
 }
 const fbPhotoCache = new Map();
 function feedbackPhotos(f) {
@@ -4063,7 +4075,7 @@ function coachTools(chip) {
         const date = vDate(a.date);
         const c = await chatDoc(date);
         chip("Checked the chat log");
-        return { date, messages: (c.messages || []).map((m) => ({ at: m.at, role: m.role === "user" ? "person" : "coach", ...(m.kind ? { kind: m.kind } : {}), ...(m.photo ? { photo: true } : {}), text: snippet(m.text) })) };
+        return { date, messages: (c.messages || []).map((m) => ({ at: m.at, role: m.role === "user" ? "person" : "coach", ...(m.kind ? { kind: m.kind } : {}), ...(m.photo ? { photo: true, photos: photoCount(m) } : {}), text: snippet(m.text) })) };
       },
     },
     {
@@ -4184,7 +4196,7 @@ function checkinLabel(m) {
   return t ? `${t < "10:00" ? "Morning" : t < "15:00" ? "Afternoon" : "Evening"} Check-In` : "Check-In";
 }
 function bubble(m) {
-  if (m.role === "user") return h("div", { class: "msg user" }, m.photo ? h("span", { class: "ph" }, "📷 Photo") : null, m.text ? h("p", {}, m.text) : null);
+  if (m.role === "user") return h("div", { class: "msg user" }, m.photo ? h("span", { class: "ph" }, photoLabel(photoCount(m))) : null, m.text ? h("p", {}, m.text) : null);
   return h("div", { class: "msg bot" + (m.error ? " err" : "") },
     m.kind === "checkin" ? h("span", { class: "tag" }, checkinLabel(m)) : null,
     m.tools?.length ? h("div", { class: "chips" }, m.tools.map((t) => h("span", {}, "✓ " + t))) : null,
@@ -4199,7 +4211,7 @@ function savedBubble(m) {
   const b = bubble(m);
   const ask = async () => {
     if (S.busy || document.querySelector("dialog.confirm")) return;
-    const ok = await confirmPopup("Are you sure you want to delete this message?", snippet(m.text) || (m.photo ? "📷 Photo" : ""), "Delete");
+    const ok = await confirmPopup("Are you sure you want to delete this message?", snippet(m.text) || (m.photo ? photoLabel(photoCount(m)) : ""), "Delete");
     if (!ok) return;
     try { await deleteChatMessage(m); } catch (e) { toast(writeError(e)); }
   };
@@ -4259,25 +4271,33 @@ function buildCoach() {
   const list = h("div", { class: "chat", "aria-live": "polite" });
   const daybar = h("div", { class: "daybar" });
   const ta = h("textarea", { rows: "1", placeholder: "What did you eat?", "aria-label": "Message to your coach" });
-  const file = h("input", { type: "file", accept: "image/*", hidden: true });
-  const cam = h("button", { class: "btn", type: "button", "aria-label": "Attach a photo", title: "Attach a photo", onclick: photoPick(file) }, "📷");
+  const file = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
+  const pick = photoPick(file);
   const send = h("button", { class: "btn btn-primary", type: "submit" }, "Send");
   const stop = h("button", { class: "btn", type: "button", hidden: true, onclick: () => S.ctl?.abort() }, "Stop");
-  const attached = h("div", { class: "attached", hidden: true });
+  const attached = h("div", { class: "fbphotos", hidden: true });
   const note = h("p", { class: "small muted", hidden: true });
   const imgs = S.sampleLimits?.images;
+  const cam = h("button", { class: "btn", type: "button", "aria-label": "Attach a photo", title: "Attach a photo",
+    onclick: () => { if (S.photos.length >= chatPhotoMax()) toast(`Up to ${chatPhotoMax()} photos in a message.`); else pick(); } }, "📷");
   if (!imgs) cam.hidden = true; else file.accept = imgs.mediaTypes.join(",");
+  const drawTray = () => {
+    attached.replaceChildren(...S.photos.map((p, n) => h("div", { class: "fbthumb" }, h("img", { src: p.url, alt: `Photo ${n + 1}`, onclick: () => openPhoto(p.url) }),
+      h("button", { type: "button", class: "x", "aria-label": `Remove photo ${n + 1}`, onclick: () => { URL.revokeObjectURL(p.url); S.photos.splice(n, 1); drawTray(); } }, "×"))));
+    attached.hidden = !S.photos.length;
+  };
   file.addEventListener("change", () => {
-    const f = file.files?.[0];
+    const picked = [...(file.files || [])];
     file.value = "";
-    if (!f) return;
-    if (imgs && f.size > imgs.maxInputBytes) { toast("That photo is too large."); return; }
-    if (!photoTypeOk(f, imgs)) return;
-    S.photo = f;
-    const url = URL.createObjectURL(f);
-    attached.replaceChildren(h("img", { src: url, alt: "Attached photo" }), h("span", { class: "muted" }, "Photo attached"),
-      h("button", { class: "btn", type: "button", onclick: () => { S.photo = null; attached.hidden = true; URL.revokeObjectURL(url); } }, "Remove"));
-    attached.hidden = false;
+    if (S.busy) return;
+    const room = chatPhotoMax() - S.photos.length;
+    const ok = picked.filter((f) => {
+      if (imgs && f.size > imgs.maxInputBytes) { toast("That photo is too large."); return false; }
+      return photoTypeOk(f, imgs);
+    });
+    for (const f of ok.slice(0, Math.max(room, 0))) S.photos.push({ file: f, url: URL.createObjectURL(f) });
+    if (ok.length > room) toast(`Up to ${chatPhotoMax()} photos in a message.`);
+    drawTray();
   });
   // One line when empty; grows with what's typed, and only scrolls past 160px.
   ta.addEventListener("input", () => {
@@ -4297,7 +4317,8 @@ function buildCoach() {
     ta.disabled = true; send.disabled = true; cam.disabled = true;
   }
   v.replaceChildren(daybar, list, form);
-  coachEls = { list, daybar, ta, send, stop, cam, attached, note };
+  coachEls = { list, daybar, ta, send, stop, cam, attached, note, drawTray };
+  drawTray();
   renderDaybar();
   renderChat();
 }
@@ -4339,8 +4360,8 @@ function renderChat() {
 function noReplyRow(m) {
   return chatRow("bot", h("div", { class: "msg bot" },
     h("p", { class: "small muted", style: "margin:0 0 8px" }, "No reply came back for this one. The page may have closed while the coach was answering." +
-      (m.photo ? " The photo wasn't kept, so send it again if the coach needs to see it." : "")),
-    h("button", { class: "btn", type: "button", onclick: () => sendMessage({ text: m.text || "Here's a photo.", retry: m.at, photoLost: !!m.photo }) }, "Try again")), seenAt(`noreply:${S.pid}:${m.at}`));
+      (m.photo ? ` The ${photoCount(m) > 1 ? "photos weren't" : "photo wasn't"} kept, so send ${photoCount(m) > 1 ? "them" : "it"} again if the coach needs to see ${photoCount(m) > 1 ? "them" : "it"}.` : "")),
+    h("button", { class: "btn", type: "button", onclick: () => sendMessage({ text: m.text || (photoCount(m) > 1 ? "Here are some photos." : "Here's a photo."), retry: m.at, photoLost: !!m.photo }) }, "Try again")), seenAt(`noreply:${S.pid}:${m.at}`));
 }
 // The composer's placeholder answers the last thing the coach said: its question, the
 // check-in on screen, or else the meal that's due.
@@ -4427,15 +4448,15 @@ function typewriter(render) {
 async function sendMessage(over) {
   const E = coachEls;
   const text = over ? String(over.text || "").trim() : E.ta.value.trim();
-  const photo = over ? over.photo || null : S.photo;
-  if ((!text && !photo) || S.busy || !S.sample) return null;
-  if (todayStr() !== S.today) { choose(S.pid); toast("It's a new day. Send again."); return null; }
+  const photos = over ? (over.photo ? [over.photo] : []) : S.photos.map((p) => p.file);
+  if ((!text && !photos.length) || S.busy || !S.sample) return null;
+  if (todayStr() !== S.today) { choose(S.pid); toast(photos.length ? "It's a new day. Add your photos again and send." : "It's a new day. Send again."); return null; }
   S.busy = true;
   E.send.disabled = true; E.cam.disabled = true; E.stop.hidden = false;
   const date = S.today;
   const checkin = over ? null : S.checkin;
   const history = S.chat.messages.filter((m) => m.text && !m.error).slice(over?.retry ? -13 : -12, over?.retry ? -1 : undefined);
-  const userMsg = { role: "user", text, at: Date.now(), ...(photo ? { photo: true } : {}) };
+  const userMsg = { role: "user", text, at: Date.now(), ...(photos.length ? { photo: true, photos: photos.length } : {}) };
 
   // Show the pending reply right away.
   const chips = [];
@@ -4446,7 +4467,7 @@ async function sendMessage(over) {
 
   if (!over) {
     E.ta.value = ""; E.ta.style.height = ""; E.ta.style.overflowY = "";
-    S.photo = null; E.attached.hidden = true;
+    clearPhotos();
   }
   try {
     await mutateChat(date, (c) => {
@@ -4458,10 +4479,11 @@ async function sendMessage(over) {
   renderChat();
 
   const turns = [{ role: "user", content: RULES + "\n\n" + (S.prof.mode === "noom" ? NOOM : CLASSIC) + "\n\n" + coachPrefs(S.prof) + "\n\nAPP DATA\n" + context(text) }];
-  for (const m of history) turns.push({ role: m.role === "user" ? "user" : "assistant", content: m.text + (m.photo ? "\n(sent a photo)" : "") });
+  for (const m of history) turns.push({ role: m.role === "user" ? "user" : "assistant", content: m.text + (m.photo ? (photoCount(m) > 1 ? `\n(sent ${photoCount(m)} photos)` : "\n(sent a photo)") : "") });
   if (checkin) turns.push({ role: "assistant", content: checkin.text });
-  turns.push({ role: "user", content: (text || "Here's a photo.") + (photo ? "\n(Photo attached: use it to identify the food and judge portions, or read the label.)" : "") +
-    (over?.photoLost ? "\n(They sent a photo with this earlier, but it's no longer available. Work from the text, and ask about anything you can't tell.)" : "") });
+  turns.push({ role: "user", content: (text || (photos.length > 1 ? "Here are some photos." : "Here's a photo.")) +
+    (photos.length > 1 ? `\n(${photos.length} photos attached: use them together to identify the food and judge portions, or read the label.)` : photos.length ? "\n(Photo attached: use it to identify the food and judge portions, or read the label.)" : "") +
+    (over?.photoLost ? "\n(They sent a photo or photos with this earlier, but they're no longer available. Work from the text, and ask about anything you can't tell.)" : "") });
 
   S.ctl = new AbortController();
   let reply = "", error = null;
@@ -4469,7 +4491,7 @@ async function sendMessage(over) {
   try {
     const res = await S.sample(turns, {
       tools: coachTools(chip), signal: S.ctl.signal, modelTier: S.prof.coachTier === "default" ? "default" : "quick",
-      ...(photo ? { images: [photo] } : {}),
+      ...(photos.length ? { images: photos } : {}),
       onText: ({ text: t }) => { reply = t; tw.push(t); },
     });
     reply = res.text;
