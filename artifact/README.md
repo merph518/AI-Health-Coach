@@ -55,6 +55,9 @@ Feedback tab or the coach's `send_feedback` tool.
   goals, weeks, plan: [{theme, focus, lessons?: [{title, key}]}]}. trackKey is `s` (the built-in
   16-week curriculum in the page) or `c-<id>`; lessonKey is `<trackKey>-<n>`. A custom program's
   outline is drafted by Claude from the person's goals, and each week's lessons when they reach it.
+  Lessons open one a day but never stack: only lessons finished before today count toward what is open
+  (plus one catch-up), so someone who misses days stays on the lesson they're on instead of facing a
+  backlog. The week, theme and weekly goal follow their place in the lessons, never ahead of the calendar.
 - `people/{pid}/lessons/{lessonKey}`: a lesson Claude wrote once, as tap-through screens
   {v: 2, title, at, screens: [{type text|quiz|truefalse|poll|reveal|scale|reflect, art (emoji), ...}]}.
   The page writes the day's next lesson in the background when it opens (only if Claude access

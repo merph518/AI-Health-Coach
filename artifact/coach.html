@@ -1714,22 +1714,29 @@ function programLessons(pr = S.program || {}) {
   }));
 }
 const lessonKey = (tk, n) => `${tk}-${n}`;
+// Lessons open one a day, but a missed day never stacks: new ones open as earlier ones are finished, so
+// someone who falls behind sees the lesson they're on plus at most one catch-up (CATCH_UP_LESSONS).
+const CATCH_UP_LESSONS = 1;
 function prog() {
   const pr = S.program || {};
   const tk = trackKey(pr), lessons = programLessons(pr);
   const start = pr.start?.[tk] || S.today;
   const day = Math.max(1, daysBetween(start, S.today) + 1);
   const total = lessons.length;
-  const week = Math.min(Math.ceil(day / 7), Math.max(1, Math.ceil(total / 7)));
   const done = pr.done || {};
-  const avail = Math.min(day, total);
   const isDone = (n) => !!done[lessonKey(tk, n)];
+  const doneBeforeToday = lessons.filter((l) => isDone(l.n) && done[lessonKey(tk, l.n)].date !== S.today).length;
+  const avail = Math.min(day, total, doneBeforeToday + 1 + CATCH_UP_LESSONS);
+  // Where they are in the lessons: the first one not done, so the theme and weekly goal wait for them too.
+  const current = lessons.find((l) => !isDone(l.n)) || null;
+  const calWeek = Math.min(Math.ceil(day / 7), Math.max(1, Math.ceil(total / 7)));
+  const week = Math.min(calWeek, current ? current.week : lessons.length ? lessons[lessons.length - 1].week : 1);
   const next = lessons.find((l) => l.n <= avail && !isDone(l.n)) || null;
   const behind = lessons.filter((l) => l.n <= avail && !isDone(l.n)).length;
   const doneToday = lessons.filter((l) => done[lessonKey(tk, l.n)]?.date === S.today);
   const goal = pr.goals?.[`${tk}:w${week}`] || null;
   const lastGoal = week > 1 ? pr.goals?.[`${tk}:w${week - 1}`] || null : null;
-  return { pr, tk, lessons, start, day, week, total, avail, next, behind, doneToday, isDone, goal, lastGoal,
+  return { pr, tk, lessons, start, day, shownDay: Math.min(day, current ? current.n : total), week, total, avail, next, behind, doneToday, isDone, goal, lastGoal,
     theme: lessons.find((l) => l.week === week)?.theme || "", name: tk === "s" ? "16-week program" : pr.custom.name || "Your custom program",
     finished: lessons.length > 0 && lessons.every((l) => isDone(l.n)) };
 }
@@ -2175,13 +2182,13 @@ function openLessonList() {
   const dlg = sheet("All lessons");
   const weeks = [...new Set(P0.lessons.map((l) => l.week))];
   put(dlg, h("div", { class: "sheet-head" }, h("h2", {}, P0.name), closeX(dlg)),
-    h("p", { class: "small muted" }, `${P0.lessons.filter((l) => P0.isDone(l.n)).length} of ${P0.total} lessons done. A new one opens each day.`),
+    h("p", { class: "small muted" }, `${P0.lessons.filter((l) => P0.isDone(l.n)).length} of ${P0.total} lessons done. A new one opens each day; missed ones wait for you, one at a time.`),
     ...weeks.map((w) => {
       const ls = P0.lessons.filter((l) => l.week === w);
       return h("details", { class: "wk", open: w === P0.week },
         h("summary", {}, `Week ${w}: ${ls[0].theme}`),
         h("ul", { class: "llist" }, ls.map((l) => {
-          const open = l.n <= P0.avail;
+          const open = l.n <= P0.avail || P0.isDone(l.n);
           return h("li", {}, h("span", { class: `tick${P0.isDone(l.n) ? " on" : ""}`, "aria-hidden": "true" }, P0.isDone(l.n) ? "✓" : ""),
             open ? h("button", { class: "linkish", type: "button", onclick: () => { dlg.close(); openLesson(l.n); } }, l.title || `Lesson ${l.n}`)
               : h("span", { class: "faint" }, l.title || `Lesson ${l.n}`));
@@ -2648,6 +2655,7 @@ function programTasks(d, P0) {
     { ic: "meal", title: "Log your meals", sub: meals.length ? `${meals.length} of 3 meals logged today${meals.length < 3 ? ` · ${["Breakfast", "Lunch", "Dinner"].filter((m) => !meals.includes(m)).join(", ").toLowerCase()} to go` : ""}` : "Breakfast, lunch and dinner", done: meals.length === 3, onclick: logWithCoach },
   ];
   if (P0.finished) tasks.push({ ic: "book", title: "Program complete", sub: "Every lesson is done. Amazing!", done: true, onclick: openLessonList });
+  else if (P0.next && P0.doneToday.length) tasks.push({ ic: "book", title: P0.doneToday[0].title || "Today's lesson", sub: `Done today · tap for 1 more if you like: ${P0.next.title || "the next lesson"}`, done: true, onclick: () => openLesson(P0.next.n) });
   else if (P0.next) tasks.push({ ic: "book", title: P0.next.title || "Today's lesson", sub: `${(() => { const r = lessonProgress(lessonKey(P0.tk, P0.next.n)); return r ? `Pick up where you left off · screen ${r.i + 1} of ${r.n}` : "Today's lesson · about 5 minutes"; })()}${P0.behind > 1 ? ` · ${P0.behind - 1} more to catch up` : ""}`, done: false, onclick: () => openLesson(P0.next.n), thumb: weekPhoto(P0, P0.next.week) });
   else tasks.push({ ic: "book", title: "Lesson done", sub: P0.doneToday.length ? P0.doneToday[0].title || "Today's lesson" : "All caught up. Next lesson tomorrow.", done: true, onclick: openLessonList });
   tasks.push({ ic: "drop", title: water >= W.goal ? "Water goal met" : "Drink water", sub: `${water} of ${W.goal} ${waterWord(W, W.goal)}`, done: water >= W.goal, meter: water / W.goal, onclick: openWater });
@@ -2666,8 +2674,8 @@ function programCard(d) {
   const n = tasks.filter((t) => t.done).length; celebrate(tasks);
   return h("section", { class: "card program" },
     h("div", { class: "banner" }, photoImg(weekPhoto(P0, P0.week)),
-      h("div", { class: "over" }, h("small", {}, `Day ${P0.day} · Week ${P0.week}${P0.tk === "s" ? "" : ` · ${P0.name}`}`), h("div", { class: "serif", style: "font-size:22px" }, P0.theme))),
-    h("div", { class: "phead nophoto" }, h("div", {}, h("h2", {}, `Day ${P0.day} · Week ${P0.week}`), h("div", { class: "small muted" }, `${P0.theme}${P0.tk === "s" ? "" : ` · ${P0.name}`}`))),
+      h("div", { class: "over" }, h("small", {}, `Day ${P0.shownDay} · Week ${P0.week}${P0.tk === "s" ? "" : ` · ${P0.name}`}`), h("div", { class: "serif", style: "font-size:22px" }, P0.theme))),
+    h("div", { class: "phead nophoto" }, h("div", {}, h("h2", {}, `Day ${P0.shownDay} · Week ${P0.week}`), h("div", { class: "small muted" }, `${P0.theme}${P0.tk === "s" ? "" : ` · ${P0.name}`}`))),
     weekStrip(),
     h("ul", { class: "tlist" }, tasks.map(taskRow)),
     h("div", { class: "pfoot" }, h("button", { class: "linkish small", type: "button", onclick: openLessonList }, "All lessons"),
@@ -3621,7 +3629,7 @@ function context(message) {
   if (programOn() && S.days[today]?.water) { const W = waterPlan(); L.push(`Water today: ${waterCount(S.days[today], W)} of ${W.goal} ${W.many} (${waterOz(S.days[today])} of ${W.goal * W.oz} fl oz).`); }
   if (programOn() && S.program !== undefined) {
     const g = prog();
-    L.push(`PROGRAM: ${g.name}, day ${g.day}, week ${g.week} of ${Math.ceil(g.total / 7)} (theme: ${g.theme}). ${g.finished ? "They've finished every lesson." : g.next ? `Next lesson to read: "${g.next.title || "this week's first lesson"}"${g.behind > 1 ? ` (${g.behind} waiting)` : ""}.` : "Today's lesson is done."}`);
+    L.push(`PROGRAM: ${g.name}, day ${g.shownDay}, week ${g.week} of ${Math.ceil(g.total / 7)} (theme: ${g.theme}). ${g.finished ? "They've finished every lesson." : g.next ? `Next lesson to read: "${g.next.title || "this week's first lesson"}"${g.behind > 1 ? ` (${g.behind} waiting)` : ""}.` : "Today's lesson is done."}`);
     if (g.doneToday.length) L.push(`Lesson read today: "${g.doneToday[0].title}". Key points: ${g.doneToday[0].key}`);
     L.push(g.goal ? `This week's goal (their words): ${JSON.stringify(g.goal.text)}` : "No goal set for this week yet.");
     if (g.lastGoal) L.push(`Last week's goal (their words): ${JSON.stringify(g.lastGoal.text)}`);
