@@ -3390,7 +3390,7 @@ function checkinPlan() {
   if (programOn() && S.program !== undefined && !said.has("lesson")) {
     const P0 = prog();
     const title = String(P0.next?.title || "Today's lesson").replace(/[\[\]()]/g, "").slice(0, 60);
-    if (P0.next) topics.push({ k: "lesson", link: !lessonDoneOn(S.today) && !lessonDoneOn(addDays(S.today, -1)), md: `[${title}](app:lesson)`,
+    if (P0.next && !P0.doneToday.length) topics.push({ k: "lesson", link: !lessonDoneOn(S.today) && !lessonDoneOn(addDays(S.today, -1)), md: `[${title}](app:lesson)`,
       facts: [`Today's lesson: "${P0.next.title || "Today's lesson"}" (about 5 minutes, week ${P0.week}: ${P0.theme})${P0.behind > 1 ? `. ${P0.behind - 1} more waiting to catch up on` : ""}.`] });
     else if (P0.doneToday.length) topics.push({ k: "lesson", facts: [`They already finished today's lesson ("${P0.doneToday[0].title || "Today's lesson"}").`] });
   }
@@ -3629,7 +3629,7 @@ function context(message) {
   if (programOn() && S.days[today]?.water) { const W = waterPlan(); L.push(`Water today: ${waterCount(S.days[today], W)} of ${W.goal} ${W.many} (${waterOz(S.days[today])} of ${W.goal * W.oz} fl oz).`); }
   if (programOn() && S.program !== undefined) {
     const g = prog();
-    L.push(`PROGRAM: ${g.name}, day ${g.shownDay}, week ${g.week} of ${Math.ceil(g.total / 7)} (theme: ${g.theme}). ${g.finished ? "They've finished every lesson." : g.next ? `Next lesson to read: "${g.next.title || "this week's first lesson"}"${g.behind > 1 ? ` (${g.behind} waiting)` : ""}.` : "Today's lesson is done."}`);
+    L.push(`PROGRAM: ${g.name}, day ${g.shownDay}, week ${g.week} of ${Math.ceil(g.total / 7)} (theme: ${g.theme}). ${g.finished ? "They've finished every lesson." : g.next && g.doneToday.length ? `Today's lesson is done. One optional catch-up lesson is open: "${g.next.title || "the next lesson"}"; don't push it.` : g.next ? `Next lesson to read: "${g.next.title || "this week's first lesson"}"${g.behind > 1 ? ` (${g.behind} waiting)` : ""}.` : "Today's lesson is done."}`);
     if (g.doneToday.length) L.push(`Lesson read today: "${g.doneToday[0].title}". Key points: ${g.doneToday[0].key}`);
     L.push(g.goal ? `This week's goal (their words): ${JSON.stringify(g.goal.text)}` : "No goal set for this week yet.");
     if (g.lastGoal) L.push(`Last week's goal (their words): ${JSON.stringify(g.lastGoal.text)}`);
