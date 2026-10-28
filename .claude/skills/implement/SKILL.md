@@ -67,7 +67,7 @@ exercise the change".
 | `<pr-checks>` | None: the repository has no CI. The static checks are the only automated gate |
 | `<mergeability-note>` | Override 7 below |
 | `<branch-age-note>` | Override 7 below: merge `origin/main` before the PR opens |
-| `<run-watch>` | Overrides 9 and 10 below: there is no ledger, runs, or watcher; the merge is learned from the user or by looking at the PR |
+| `<run-watch>` | Override 10 below: there is no ledger, runs, or watcher; the wait for a merge is the user saying so or a look at the PR's state |
 | `<self-review>` | Override 8 below |
 | `<ready-signal>` | Override 9 below |
 | `<instructions-file>` | `CLAUDE.md` |
@@ -163,12 +163,12 @@ exercise the change".
      After roughly two failed fixes at the same problem, stop, write the attempts down, change
      approach, and send the revised plan back through plan review.
 
-7. **Step 7, mergeability.** Replaces `<mergeability-note>` and `<branch-age-note>`. Before `gh pr create`,
-   `git fetch origin --prune` and merge `origin/main` into the branch if it moved. After it, read the PR's mergeable state. A
-   sibling merging while you worked is ordinary: merge `origin/main` into the branch (no rebase,
-   no force-push), fix conflicts, rerun the static checks, and re-verify the behavior the
-   conflict touched. Then bind the PR with the `ccd_pr` tools if the session has them
-   (`get_status`, then `bind_pr`).
+7. **Step 7, mergeability.** Replaces `<mergeability-note>` and `<branch-age-note>`. Before
+   `gh pr create`, `git fetch origin --prune` and merge `origin/main` into the branch if it moved.
+   After the PR opens, read its mergeable state; a sibling merging while you worked is ordinary.
+   Every merge is `origin/main` into the branch (no rebase, no force-push), followed by fixing
+   conflicts, rerunning the static checks, and re-verifying the behavior the merge touched. Then
+   bind the PR with the `ccd_pr` tools if the session has them (`get_status`, then `bind_pr`).
 
 8. **Step 7, self review.** Replaces `<self-review>`: run the `code-review` skill on the PR at
    `high` effort as an independent reader, then read the diff against this repository's rules.
@@ -178,7 +178,7 @@ exercise the change".
    passes; if the third still has findings, stop and report them. This repository has no
    `Settled decisions` section: declined findings and their reasons go under `Self review`.
 
-9. **Step 9, the ready signal.** Replaces `<ready-signal>`: only when the PR is open, the static
+9. **Step 9, the ready signal.** Replaces `<ready-signal>`: only when the PR is open and every commit is pushed, the static
    checks pass, verification is done, and the self review ended clean, run
    `gh label create "Manual Review Needed" --force --color 0E8A16` once, run
    `gh pr edit <pr> --add-label "Manual Review Needed"`, and close the report with the line `PULL REQUEST <pr> IS READY FOR YOUR REVIEW`, where `<pr>` is the pull request number, not the issue number. The voice hooks
@@ -238,7 +238,9 @@ Where the base and this repository's earlier skill differed, this file takes:
   after merge, `Judgment calls`, `Advisor review`, and `Self review`. Write "none" for an empty
   section rather than dropping it. Title: `<type>: <summary> (#<N>)`.
 - **Push, then create.** `git push -u origin <branch>` before `gh pr create`; the base pushes only
-  in the test step this file replaces. Never push `main`, and never merge.
+  in the test step this file replaces. Every later commit on the branch (review fixes, conflict
+  merges, fixes after the user reviews) is pushed before the next review pass or the ready
+  signal. Never push `main`, and never merge.
 - **Gates before `gh pr create`.** Verification is done or the diff is docs and comments only;
   the board is re-read and any overlapping PR is named; `git diff origin/main...HEAD` carries no
   tracker number, run ID, or assistant name in a comment, UI string, or log line; no secrets or
