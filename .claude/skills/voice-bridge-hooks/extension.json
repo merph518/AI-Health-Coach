@@ -1,0 +1,10 @@
+{
+  "base": "voice-bridge-hooks",
+  "reviewLabel": "Manual Review Needed",
+  "reviewAnnouncement": "ready for review",
+  "readyLine": "PULL REQUEST <N> IS READY FOR YOUR REVIEW",
+  "spokenTerms": {},
+  "inProgressLabel": "In Progress",
+  "mainBranch": "main",
+  "startRequest": "/implement <N>"
+}

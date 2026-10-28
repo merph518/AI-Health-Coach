@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored shared skills; changed only by moving the pin.
+    ".claude/att-docs/**",
   ]),
 ]);
 
