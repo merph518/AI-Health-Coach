@@ -1,0 +1,12 @@
+# Starts the test pack queue at 22:00. A run the machine slept through starts
+# when it wakes, and stops taking new jobs at the configured cutoff.
+
+[Unit]
+Description=Start the test pack queue each night
+
+[Timer]
+OnCalendar=*-*-* 22:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

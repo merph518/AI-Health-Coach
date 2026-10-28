@@ -11,7 +11,9 @@
     "db:generate": "drizzle-kit generate",
     "setup:users": "tsx scripts/setup-users.ts",
     "import": "tsx scripts/import-tracker.ts",
-    "lint:artifact": "node scripts/lint-artifact.mjs"
+    "lint:artifact": "node scripts/lint-artifact.mjs",
+    "att-docs:sync": "node scripts/att-docs.mjs sync",
+    "att-docs:check": "node scripts/att-docs.mjs check"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
