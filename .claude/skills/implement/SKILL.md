@@ -164,8 +164,8 @@ exercise the change".
      approach, and send the revised plan back through plan review.
 
 7. **Step 7, mergeability.** Replaces `<mergeability-note>` and `<branch-age-note>`. Before
-   `gh pr create`, `git fetch origin --prune` and merge `origin/main` into the branch if it moved.
-   After the PR opens, read its mergeable state; a sibling merging while you worked is ordinary.
+   `gh pr create`, `git fetch origin --prune` and merge `origin/main` into the branch if it moved,
+   before the `git push -u`. After the PR opens, read its mergeable state; a sibling merging while you worked is ordinary.
    Every merge is `origin/main` into the branch (no rebase, no force-push), followed by fixing
    conflicts, rerunning the static checks, and re-verifying the behavior the merge touched. Then
    bind the PR with the `ccd_pr` tools if the session has them (`get_status`, then `bind_pr`).
