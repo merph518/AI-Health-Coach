@@ -66,12 +66,14 @@ exercise the change".
 | `<static-checks>` | Override 4 below |
 | `<pr-checks>` | None: the repository has no CI. The static checks are the only automated gate |
 | `<mergeability-note>` | Override 7 below |
+| `<branch-age-note>` | Override 7 below: merge `origin/main` before the PR opens |
+| `<run-watch>` | Overrides 9 and 10 below: there is no ledger, runs, or watcher; the merge is learned from the user or by looking at the PR |
 | `<self-review>` | Override 8 below |
 | `<ready-signal>` | Override 9 below |
 | `<instructions-file>` | `CLAUDE.md` |
 | `<post-merge-checks>` | Override 10 below |
 | `<merge-cleanup>` | None. Branches and worktrees stay where they are |
-| `<sampling-note>`, `<discovery-rules>`, `<schema-source>`, `<project-exclusion>`, `<test-accounts>`, `<test-dispatch>`, `<test-run-rules>`, `<shared-env>`, `<branch-age-note>`, `<run-watch>`, `<baseline-rules>`, `<artifact-read>`, `<failure-snapshot>`, `<deviation-note>`, `<deviation-records>`, `<fix-cycle-budget>`, `<investigation-log>`, `<skip-ledger>`, `<pairing>` | None: they belong to the base's test runner, which this repository does not have |
+| `<sampling-note>`, `<discovery-rules>`, `<schema-source>`, `<project-exclusion>`, `<test-accounts>`, `<test-dispatch>`, `<test-run-rules>`, `<shared-env>`, `<baseline-rules>`, `<artifact-read>`, `<failure-snapshot>`, `<deviation-note>`, `<deviation-records>`, `<fix-cycle-budget>`, `<investigation-log>`, `<skip-ledger>`, `<pairing>` | None: they belong to the base's test runner, which this repository does not have |
 
 ## Overrides
 
@@ -154,12 +156,15 @@ exercise the change".
      repeat that line in the PR body.
    - Changed only docs, comments, or files the page does not load (skills, README, scripts):
      skip the browser run and say so in the report.
+   - When the app does not do what `artifact/README.md` says and the doc is right, fix the app. If
+     the doc is wrong or ambiguous, file an issue for it and note that under `Judgment calls`.
    - Failures: read the console, network response, or stored row before editing. When the cause
      is not proven by existing output, make the first change add diagnostics that settle it.
      After roughly two failed fixes at the same problem, stop, write the attempts down, change
      approach, and send the revised plan back through plan review.
 
-7. **Step 7, mergeability.** Replaces `<mergeability-note>`: read the PR's mergeable state. A
+7. **Step 7, mergeability.** Replaces `<mergeability-note>` and `<branch-age-note>`. Before `gh pr create`,
+   `git fetch origin --prune` and merge `origin/main` into the branch if it moved. After it, read the PR's mergeable state. A
    sibling merging while you worked is ordinary: merge `origin/main` into the branch (no rebase,
    no force-push), fix conflicts, rerun the static checks, and re-verify the behavior the
    conflict touched. Then bind the PR with the `ccd_pr` tools if the session has them
@@ -176,13 +181,14 @@ exercise the change".
 9. **Step 9, the ready signal.** Replaces `<ready-signal>`: only when the PR is open, the static
    checks pass, verification is done, and the self review ended clean, run
    `gh label create "Manual Review Needed" --force --color 0E8A16` once, run
-   `gh pr edit <N> --add-label "Manual Review Needed"`, and close the report with the line `PULL REQUEST <N> IS READY FOR YOUR REVIEW`. The voice hooks
+   `gh pr edit <pr> --add-label "Manual Review Needed"`, and close the report with the line `PULL REQUEST <pr> IS READY FOR YOUR REVIEW`, where `<pr>` is the pull request number, not the issue number. The voice hooks
    read that line (`.claude/skills/voice-bridge-hooks/extension.json`), so keep its wording.
    Say which artifact was used for testing and whether the live one needs a publish. The base's
    skip and deviation paragraphs do not apply here.
 
-10. **Step 10, after the merge.** Replaces `<run-watch>`, `<post-merge-checks>`, and the ledger
-    conditions. If the PR was closed without merging, remove `In Progress` from the issue (read
+10. **Step 10, after the merge.** Replaces `<post-merge-checks>` and the ledger
+    conditions, and base items 5 and 6 read `<run-watch>` as "no ledger": item 5 still reports the
+    merge in one line, and item 6 archives when nothing else is open. If the PR was closed without merging, remove `In Progress` from the issue (read
     it back), say why on the issue, and stop. Otherwise: check the PR for unaddressed comments;
     close the issue by hand if it is still open and remove `In Progress`; if the PR body said
     the live artifact needs a publish, ask the user first, and when they say yes read the live
@@ -231,6 +237,8 @@ Where the base and this repository's earlier skill differed, this file takes:
   data in any screenshot), the test artifact used, whether the live artifact needs a publish
   after merge, `Judgment calls`, `Advisor review`, and `Self review`. Write "none" for an empty
   section rather than dropping it. Title: `<type>: <summary> (#<N>)`.
+- **Push, then create.** `git push -u origin <branch>` before `gh pr create`; the base pushes only
+  in the test step this file replaces. Never push `main`, and never merge.
 - **Gates before `gh pr create`.** Verification is done or the diff is docs and comments only;
   the board is re-read and any overlapping PR is named; `git diff origin/main...HEAD` carries no
   tracker number, run ID, or assistant name in a comment, UI string, or log line; no secrets or

@@ -27,8 +27,7 @@ function readLock() {
 }
 
 function fail(message) {
-  console.error(`att-docs: ${message}`);
-  process.exit(1);
+  throw new Error(message);
 }
 
 function sync(tagArg) {
@@ -95,7 +94,12 @@ function check() {
   console.log(`att-docs: ${DIR} matches ${LOCK} (${lock.repo} ${lock.tag}, tree ${lock.tree.slice(0, 7)})`);
 }
 
-const [command, tag] = process.argv.slice(2);
-if (command === "sync") sync(tag);
-else if (command === "check") check();
-else fail("usage: att-docs.mjs sync [<tag>] | check");
+try {
+  const [command, tag] = process.argv.slice(2);
+  if (command === "sync") sync(tag);
+  else if (command === "check") check();
+  else fail("usage: att-docs.mjs sync [<tag>] | check");
+} catch (error) {
+  console.error(`att-docs: ${error.message}`);
+  process.exitCode = 1;
+}

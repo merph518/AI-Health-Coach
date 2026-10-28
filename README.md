@@ -56,4 +56,4 @@ npm run att-docs:sync -- v0.14.2  # move the pin: fetch a tag, replace the copy,
 ```
 
 After a sync, commit `.claude/att-docs/` and `.claude/att-docs.lock` together in one pull request, and run
-`claude plugin update voice@att-docs` so the user-scope voice plugin matches (the pin does not govern the plugin, which runs from its own cache).
+`claude plugin update voice@att-docs` so the user-scope voice plugin updates (the pin does not govern the plugin, which runs from its own cache and takes the marketplace's latest).

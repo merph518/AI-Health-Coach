@@ -3,7 +3,7 @@ name: implement-with-speech
 description: >-
   Implement a GitHub issue of this repository exactly as `/implement` does, with every
   reply read aloud as it lands. Use when asked to implement an issue "with speech" or "out
-  loud" ("/implement-with-speech 22").
+  loud" ("/implement-with-speech 214").
 ---
 
 # Implement with speech
