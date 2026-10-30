@@ -39,8 +39,6 @@ export const assumptionSchema = obj({ assumption: str, why: str, impact: str, cl
 export const intakeSchema = (candidates) => obj({
   ...(candidates.length ? { documents: listOf(oneOf(candidates), { minItems: 1 }) } : {}),
   received: strs,
-  missing: strs,
-  missingImpact: str,
   assumptionsToProceed: strs,
 });
 
@@ -82,14 +80,38 @@ export const riskSchema = (ids, risks) => obj({
   rules: keyed('id', ids, { risk: oneOf(risks) }),
 });
 
-export const objectivesSchema = (objectives) => obj({
+export const objectivesSchema = (objectives, { closure = false } = {}) => obj({
   objectives: keyed('objective', objectives, { applicable: { type: 'boolean' }, reason: str }),
+  // Evidence that the change includes the stage closure submit after a FATL downgrade.
+  ...(closure ? { stageClosureAfterDowngrade: { type: 'boolean' }, stageClosureQuote: str } : {}),
 });
 
-export function cardSchema({ ids, objectives, derivations }) {
+/** The kinds of scenario the source can support. The first four are asked for in every inventory. */
+export const REQUIRED_SCENARIO_KINDS = ['control', 'isolation', 'combined', 'persistence'];
+// A break scenario tries to break the change; it is asked for when a BREAK IT set is in play.
+export const SCENARIO_KINDS = [...REQUIRED_SCENARIO_KINDS, 'break', 'decision'];
+
+// Each scenario is a population, an action and an expected outcome. `kindChecks`
+// makes the reply answer for every required kind: what its scenario tests, or
+// why the source supports none.
+export const scenarioInventorySchema = ({ ids, kinds = SCENARIO_KINDS,
+  required = REQUIRED_SCENARIO_KINDS, maxItems }) => obj({
+  scenarios: listOf(obj({
+    rules: listOf(oneOf(ids), { minItems: 1 }),
+    kind: oneOf(kinds),
+    population: str,
+    action: str,
+    outcome: str,
+  }), { minItems: 1, ...(maxItems ? { maxItems } : {}) }),
+  ...(required.length ? { kindChecks: keyed('kind', required, { note: str }) } : {}),
+});
+
+// `scenarios` names the scenario ids a card may cover.
+export function cardSchema({ ids, objectives, derivations, scenarios }) {
   const ruleList = listOf(oneOf(ids));
   return obj({
     title: str,
+    ...(scenarios ? { scenario: oneOf(scenarios) } : {}),
     mission: str,
     focus: listOf(str, { minItems: 1 }),
     expected: str,
@@ -100,25 +122,44 @@ export function cardSchema({ ids, objectives, derivations }) {
   });
 }
 
-export const cardsSchema = ({ ids, objectives, derivations, uncoveredStatuses }) => obj({
-  cards: listOf(cardSchema({ ids, objectives, derivations })),
+// The two answers to whether a card's Expected Result follows from its rules.
+export const VERDICTS = ['follows', 'does not follow'];
+
+// One row per card in the call; the reason comes first, so the verdict follows from it.
+export const verificationSchema = (refs) => obj({
+  cards: keyed('card', refs, { why: str, verdict: oneOf(VERDICTS) }),
+});
+
+// A scenario no card is written for is skipped: an existing test covers it, or no card can.
+export const SKIP_REASONS = ['reused', 'gap'];
+
+export const cardsSchema = ({ ids, objectives, derivations, uncoveredStatuses, scenarios }) => obj({
+  cards: listOf(cardSchema({ ids, objectives, derivations, scenarios })),
   uncovered: listOf(obj({
     ruleId: oneOf(ids), status: oneOf(uncoveredStatuses), gap: str, recommendation: str,
   })),
+  ...(scenarios ? { skipped: listOf(obj({
+    scenario: oneOf(scenarios), how: oneOf(SKIP_REASONS), reason: str })) } : {}),
   reuse: strs,
   assumptions: listOf(assumptionSchema),
 });
+
+/** The existing cards that serve an objective, by reference. */
+export const objectiveCardsSchema = (refs) => obj({ cards: listOf(oneOf(refs)) });
 
 export const setScopesSchema = (objectives) => obj({
   sets: keyed('objective', objectives, { scope: str }),
 });
 
-export const reviewSchema = ({ statuses, confidence }) => obj({
+export const checklistSchema = ({ statuses }) => obj({
   issues: listOf(obj({ issue: str, fix: str })),
   coverage: listOf(obj({
     ruleId: str, status: oneOf(statuses), strength: str, gap: str, recommendation: str,
   })),
   assumptions: listOf(assumptionSchema),
+});
+
+export const seniorReviewSchema = obj({
   seniorReview: obj({
     missed: str, businessBehavior: str, upstreamDownstream: str, obviousFirst: str,
     qualityDerived: str,
@@ -127,12 +168,16 @@ export const reviewSchema = ({ statuses, confidence }) => obj({
     testData: str, execution: str, regressionTargets: str, breakIt: str, screenshots: str,
     sqlValidation: str, knownRisks: str, cautions: str,
   }),
-  confidence: obj({
-    overall: oneOf(confidence), coverage: str, remainingRisks: str, assumptions: str,
-    regressionScope: str, breakItScope: str, manualReview: str,
-  }),
-  lowConfidenceReason: str,
 });
+
+/** The overall confidence level, and why when it is Low. */
+export const confidenceOverallSchema = ({ confidence }) => obj({
+  overall: oneOf(confidence), lowConfidenceReason: str,
+});
+
+/** One prose field of the Confidence Assessment, written on its own. */
+export const confidenceFieldSchema = (field) => obj({ [field]: str });
+
 
 export const revalidationSchema = obj({ passed: { type: 'boolean' }, remaining: strs });
 

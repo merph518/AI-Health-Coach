@@ -65,7 +65,7 @@ export function localFetch(url, { method = 'GET', headers = {}, body, signal } =
  * tests. `tokenize` asks the loaded llama.cpp backend for an exact count and
  * falls back to the estimate when the server offers none.
  */
-export function modelClient({ endpoint, name, temperature = 0.1, timeoutMinutes = 60,
+export function modelClient({ endpoint, name, temperature = 0.1, timeoutMinutes = 150,
   fetchImpl = localFetch }) {
   const base = localEndpoint(endpoint);
   let tokenizeUrl;
@@ -141,8 +141,10 @@ export function modelClient({ endpoint, name, temperature = 0.1, timeoutMinutes 
     try {
       body = await reply.json();
     } catch {
-      // The parse error quotes the body, so only the code goes on.
-      throw Object.assign(new ModelError('parse', 'model endpoint answered with no JSON'),
+      // A server that gives up on a request, such as at its own time-out, can end
+      // a 2xx reply with no body. The parse error quotes the body, so only the
+      // code goes on.
+      throw Object.assign(new ModelError('no-reply', 'model endpoint answered with no JSON'),
         { usage: { promptTokens: 0, outputTokens: 0, ms: Date.now() - started } });
     }
     const choice = body.choices?.[0];
