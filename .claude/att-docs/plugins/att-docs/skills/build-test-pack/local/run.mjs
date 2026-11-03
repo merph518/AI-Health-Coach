@@ -7,9 +7,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { fill, loadReference } from './config.mjs';
-import { ModelError, modelClient } from './model.mjs';
-import { jobLogs } from './status.mjs';
+import { fill, loadReference, MEMORY_STOP, rootRelative } from './config.mjs';
+import { MemoryLow, readMeminfo, waitForMemory } from './meminfo.mjs';
+import { Cancelled, ModelError, modelClient } from './model.mjs';
+import { jobLogs, readStatusLog } from './status.mjs';
 import * as P from './phases.mjs';
 
 /** The objective config names for a set, else the usual name if the builder lists it, else none. */
@@ -40,31 +41,49 @@ function countStatuses(stdout) {
 
 /** The phases in the order a job runs them; a checkpoint names the last one passed. */
 export const PHASES = ['intake', 'phase1', 'phase2', 'phase3', 'phase4', 'phase5', 'phase6',
-  'phase7', 'phase8', 'phase9-checklist', 'phase9-confidence', 'phase9-senior',
+  'phase7', 'phase8', 'phase9-checklist', 'phase9-senior', 'phase9-confidence',
   'phase9-revalidate', 'phase10'];
 
 // What a run builds for itself from the config; everything else on ctx is the job's state.
 const SETUP = new Set(['config', 'job', 'logs', 'builder', 'suiteMerge', 'model', 'ref', 'private',
-  'existingTests', 'riskLevels', 'coreObjective', 'suiteSetOrder', 'suiteRunSets', 'fullCoverageObjective', 'breakItObjective', 'rulesFresh']);
+  'existingTests', 'riskLevels', 'coreObjective', 'suiteSetOrder', 'suiteRunSets', 'fullCoverageObjective', 'breakItObjective', 'rulesFresh',
+  'window', 'windowNoted']);
 
-const checkpointPath = (outDir) => path.join(outDir, 'work', 'checkpoint.json');
+export const checkpointPath = (outDir) => path.join(outDir, 'work', 'checkpoint.json');
 
-function readCheckpoint(outDir) {
+export function readCheckpoint(outDir) {
   try {
     const saved = JSON.parse(fs.readFileSync(checkpointPath(outDir), 'utf8'));
+    // The confidence step used to run before the senior review; a job saved after it reruns both.
+    if (saved.phase === 'phase9-confidence' && !saved.state?.confidenceSteps) saved.phase = 'phase9-checklist';
     return PHASES.includes(saved.phase) ? saved : null;
   } catch {
     return null;
   }
 }
 
-export async function runJob(config, job, { model, echo = true, now = Date.now } = {}) {
+export async function runJob(config, job, { model, echo = true, now = Date.now, readMemory = readMeminfo,
+  sleep, signal = null } = {}) {
   const id = job.id ?? jobId(job);
   const outDir = path.join(config.output, id);
   const saved = job.resume ? readCheckpoint(outDir) : null;
   // A job run again from the start begins with an empty folder, so no file from
   // the last run is read as this one's. A resumed job keeps its folder and logs.
-  if (!saved) fs.rmSync(outDir, { recursive: true, force: true });
+  // A job that stopped for low memory before any phase passed has no checkpoint,
+  // but its status.log keeps the wait and fail lines that show the host ran short,
+  // so that log carries over into the new run.
+  if (!saved) {
+    const statusFile = path.join(outDir, 'status.log');
+    const stop = job.resume
+      ? readStatusLog(statusFile).filter((e) => e.phase !== 'release').at(-1) : null;
+    const kept = stop?.event === 'fail' && stop.reason === MEMORY_STOP
+      ? fs.readFileSync(statusFile, 'utf8') : null;
+    fs.rmSync(outDir, { recursive: true, force: true });
+    if (kept) {
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(statusFile, kept.endsWith('\n') ? kept : `${kept}\n`);
+    }
+  }
   fs.mkdirSync(path.join(outDir, 'work'), { recursive: true });
   const logs = jobLogs(outDir, { echo });
   const started = now();
@@ -80,7 +99,7 @@ export async function runJob(config, job, { model, echo = true, now = Date.now }
   const builder = { ...DEFAULTS, ...builderModule };
   const ctx = {
     config, job: { ...job, id }, logs, builder, suiteMerge,
-    model: model ?? modelClient(config.model),
+    model: model ?? modelClient({ ...config.model, signal }),
     ref: loadReference(config),
     pack: {},
     riskLevels: config.riskLevels ?? ['High', 'Medium', 'Low'],
@@ -89,7 +108,7 @@ export async function runJob(config, job, { model, echo = true, now = Date.now }
     breakItObjective: setObjective(config.breakItObjective, builder, 'BREAK IT'),
     suiteSetOrder: suiteMerge?.SUITE_SET_ORDER ?? builder.OBJECTIVES.slice(1),
     suiteRunSets: config.suiteMerge?.runSets ?? ['Regression Testing', 'Full Coverage Required Run'],
-    calls: 0, repairs: 0, droppedObjectives: 0, derived: 0, reviewIssues: 0, reuse: [],
+    calls: 0, repairs: 0, droppedObjectives: [], derived: 0, reviewIssues: 0, reuse: [],
     tokens: { prompt: 0, output: 0 },
     private(name, value) {
       fs.writeFileSync(path.join(outDir, 'work', name), `${JSON.stringify(value, null, 1)}\n`);
@@ -106,6 +125,11 @@ export async function runJob(config, job, { model, echo = true, now = Date.now }
   const done = saved ? PHASES.indexOf(saved.phase) : -1;
   if (saved) {
     Object.assign(ctx, saved.state);
+    // The documents are read from the root this run has, whatever root wrote the checkpoint.
+    for (const doc of ctx.documents ?? []) if (doc.file) doc.file = rootRelative(config, doc.file);
+    if (ctx.documentPaths) {
+      ctx.documentPaths = ctx.documentPaths.map((file) => rootRelative(config, file));
+    }
     pack = saved.pack ?? ctx.pack;
     logs.status({ job: id, phase: PHASES[done + 1] ?? 'done', event: 'resume', after: saved.phase });
   }
@@ -118,9 +142,31 @@ export async function runJob(config, job, { model, echo = true, now = Date.now }
   };
 
   let phase = 'intake';
+  let warned = false;
+  // Before a phase starts, the work so far is checkpointed, so this is where a stop loses nothing.
+  const checkMemory = async (name) => {
+    if (!config.memory.enabled) return;
+    const outcome = await waitForMemory(config.memory, { read: readMemory, now, sleep, signal,
+      onWait: (m) => logs.status({ job: id, phase: name, event: 'wait', reason: 'memory-low',
+        availableMiB: m.availableMiB, swapPercent: m.swapPercent }) });
+    // A stop during the wait ends it; nothing has started in this phase.
+    if (signal?.aborted) throw new Cancelled();
+    if (outcome.unreadable) {
+      if (!warned) logs.status({ job: id, phase: name, event: 'warn', reason: 'meminfo-unreadable' });
+      warned = true;
+    } else if (outcome.polls > 0 && outcome.ok) {
+      logs.status({ job: id, phase: name, event: 'memory-ok', polls: outcome.polls, waitedMs: outcome.waitedMs });
+    } else if (!outcome.ok) {
+      throw new MemoryLow({ polls: outcome.polls, waitedMs: outcome.waitedMs,
+        availableMiB: outcome.availableMiB, swapPercent: outcome.swapPercent });
+    }
+  };
   const step = async (name, fn) => {
     phase = name;
     if (PHASES.indexOf(name) <= done) return {};
+    // A stop between phases loses nothing: the last phase that passed is checkpointed.
+    if (signal?.aborted) throw new Cancelled();
+    await checkMemory(name);
     const t = now();
     logs.status({ job: id, phase: name, event: 'start' });
     const counts = await fn();
@@ -132,6 +178,7 @@ export async function runJob(config, job, { model, echo = true, now = Date.now }
   const packPath = path.join(outDir, packName);
   let written = null;
   try {
+    await P.readWindow(ctx, PHASES[done + 1] ?? 'done');
     await step('intake', () => P.intake(ctx));
     await step('phase1', () => P.phase1(ctx));
     await step('phase2', async () => {
@@ -160,12 +207,17 @@ export async function runJob(config, job, { model, echo = true, now = Date.now }
       const fixes = await P.phase9Fix(ctx, pack);
       return { ...counts, fixRounds: fixes.rounds };
     });
-    await step('phase9-confidence', () => P.phase9Confidence(ctx, pack));
     await step('phase9-senior', () => P.phase9SeniorReview(ctx, pack));
+    await step('phase9-confidence', () => P.phase9Confidence(ctx, pack));
     await step('phase9-revalidate', async () => {
       delete pack.revalidation;
       await P.phase8(ctx, pack, 'rebuild');
       const again = await P.revalidate(ctx, pack);
+      // Items still open lower what the pack can claim, so the rating is made again with them in view.
+      if (!again.passed) {
+        return { revalidated: false, remaining: again.remaining,
+          confidence: await P.reRateConfidence(ctx, pack) };
+      }
       return { revalidated: again.passed, remaining: again.remaining };
     });
     await step('phase10', () => P.phase10(ctx, pack));
@@ -202,16 +254,18 @@ export async function runJob(config, job, { model, echo = true, now = Date.now }
     return { ok: true, id, outDir, packPath, workbook: workbook && path.join(outDir, workbook),
       ...summary };
   } catch (error) {
-    const reason = error instanceof P.GateError ? `gate:${error.code}`
-      : error instanceof ModelError ? `model:${error.code}` : 'error';
+    const reason = error instanceof Cancelled ? 'cancelled' : error instanceof P.GateError ? `gate:${error.code}`
+      : error instanceof ModelError ? `model:${error.code}`
+        : error instanceof MemoryLow ? `memory:${error.code}` : 'error';
     logs.detail('stopped', error.stack ?? String(error));
-    const counts = error instanceof P.GateError ? error.counts : {};
+    const counts = error instanceof P.GateError || error instanceof MemoryLow ? error.counts : {};
     logs.status({ job: id, phase, event: 'fail', reason, ms: now() - started, calls: ctx.calls,
       ...counts });
     if (Object.keys(ctx.pack).length) {
       fs.writeFileSync(path.join(outDir, 'work', 'partial-pack.json'),
         `${JSON.stringify(ctx.pack, null, 1)}\n`);
     }
-    return { ok: false, id, outDir, phase, reason, ms: now() - started, packPath, workbook: written };
+    return { ok: false, id, outDir, phase, reason, ms: now() - started, packPath, workbook: written,
+      ...(error instanceof P.GateError ? { counts: error.counts } : {}) };
   }
 }
