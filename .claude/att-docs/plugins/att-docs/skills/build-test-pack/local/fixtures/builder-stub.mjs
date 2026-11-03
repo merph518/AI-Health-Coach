@@ -85,6 +85,9 @@ export function buildPack(pack) {
   }
   if (!pack.testerNotes) add('Tester Notes', 'fields are blank');
   if (!CONFIDENCE_LEVELS.includes(pack.confidence?.overall)) add('Confidence Assessment', 'no overall');
+  if (pack.confidence?.overall === 'Low' && blank(pack.limitations?.['Confidence Assessment'])) {
+    add('Confidence Assessment', 'overall confidence is Low and no limitation says why');
+  }
   if (blank(pack.executiveSummary?.confidence)) add('Executive Summary', 'confidence is blank');
   if (!list(pack.assumptions).length && blank(pack.limitations?.Assumptions)) {
     add('Assumptions', 'fields are blank and no limitation says why');
@@ -101,18 +104,33 @@ export function buildPack(pack) {
   const fileName = pack.suite ? `${pack.suite}_Suite_Pack.xlsx` : `ISSUE${pack.issue}_Pack.xlsx`;
   // The sheets of the workbook the command line writes; `buildPack` leaves its own `sheets`
   // empty so the pipeline's cross-checks of builder sheets against the pack have nothing to compare.
+  // Each sheet leads with a title row, a subtitle row and a blank row, then its headers in row 4.
+  const sheet = (name, headers, rows) => ({ name, rows: [[`${pack.suite || `Issue ${pack.issue}`} test pack`],
+    [name], [], headers, ...rows] });
+  const impacted = list(pack.rules).filter((r) => r.impact !== 'Not Impacted').length;
   workbooks.set(validation, [
-    { name: 'Impact Analysis', rows: [['Rule ID', 'Rule Name', 'Impact Classification'],
-      ...list(pack.rules).map((r) => [r.id, r.name, r.impact])] },
-    { name: 'Test Cards Markdown', rows: [['Test Case ID', 'Test Case Title', 'Expected Result', 'Rules Covered'],
-      ...list(pack.testCards).map((c) => [c.id, c.title, c.expected, list(c.rules).join(', ')])] },
-    { name: 'ALM Upload', rows: [['Test Name', 'Step Name', 'Description', 'Expected Result'],
-      ...list(pack.testCards).flatMap((c) => list(c.steps).map((st, i) =>
-        [`${c.id} ${c.title}`, `Step ${i + 1}`, st.description, st.expected]))] },
-    { name: 'Coverage Matrix', rows: [['Rule ID', 'Status'],
-      ...ruleCoverage(pack).map((r) => [r.rule.id, r.status])] },
-    { name: 'Workbook Validation', rows: [['Sheet', 'Status', 'Notes'],
-      ...validation.map(([sheet, , , status, notes]) => [sheet, status, notes])] },
+    sheet('Dashboard', ['Item', 'Value'], [['Number of Impacted Business Rules', impacted],
+      ['Number of Reusable Test Cards', list(pack.testCards).length],
+      ['Number of Applicable Test Sets', list(pack.testSets).length],
+      ['Overall Confidence', pack.confidence?.overall ?? '']]),
+    sheet('Impact Analysis', ['Rule ID', 'Rule Name', 'Impact Classification', 'Status'],
+      list(pack.rules).map((r) => [r.id, r.name, r.impact, r.status ?? ''])),
+    sheet('Test Cards Markdown', ['Test Case ID', 'Test Case Title', 'Focus', 'Expected Result', 'Rules Covered'],
+      list(pack.testCards).map((c) => [c.id, c.title, list(c.focus).map((f, i) => (/^\d+[.)]\s/.test(f) ? f : `${i + 1}. ${f}`)).join('\n'),
+        c.expected, list(c.rules).join(', ')])),
+    // The Test Name is the card ID alone, so a title's "/" never reaches the ALM import.
+    sheet('ALM Upload', ['Test Name', 'Step Name', 'Description', 'Expected Result'],
+      list(pack.testCards).flatMap((c) => list(c.steps).map((st, i) =>
+        [c.id, `Step ${i + 1}`, st.description, st.expected]))),
+    sheet('Coverage Matrix', ['Rule ID', 'Status'],
+      ruleCoverage(pack).map((r) => [r.rule.id, r.status])),
+    // The sheets Phase 9 fills, as Field / Value rows, so the revalidation has them to read.
+    ...[['Executive Summary', pack.executiveSummary], ['Senior Tester Review', pack.seniorReview],
+      ['Tester Notes', pack.testerNotes], ['Confidence Assessment', pack.confidence]].map(([name, fields]) =>
+      sheet(name, ['Field', 'Value'], Object.entries(fields ?? {}).map(([field, value]) =>
+        [field, Array.isArray(value) ? value.join('; ') : String(value)]))),
+    sheet('Workbook Validation', ['Sheet', 'Status', 'Notes'],
+      validation.map(([name, , , status, notes]) => [name, status, notes])),
   ]);
   return { fileName, sheets: [], validation, failed: validation.filter((r) => r[3] === 'FAIL') };
 }

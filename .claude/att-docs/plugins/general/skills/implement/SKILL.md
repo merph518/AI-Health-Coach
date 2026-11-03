@@ -252,6 +252,145 @@ git log --oneline origin/<default-branch>..HEAD
 
 Must print nothing.
 
+### Name the session
+
+With the branch cut, give the session the name of its work, so several
+sessions in one repository can be told apart in the sidebar and by voice. The
+session sets its own title with `session_title.py`, a script in the voice
+plugin's `voice-bridge-hooks` folder (under `.claude/att-docs` in a repository
+that vendors the plugins), and never through the voice bridge's tools:
+
+```bash
+python3 <voice-bridge-hooks folder>/session_title.py work "issue #57 read server window"
+```
+
+The work name starts with the issue, written with a `#`, and a few words from
+its title. The script finds the session
+it runs in, keeps its base title, such as `Overmind 2`, and replaces only the
+work name after the dash, so names do not pile up when the session moves on to
+other work, and spoken references to the base title still find it. Run it again
+whenever the session starts work on a different issue. If the script is missing
+or reports an error, skip the rename and go on, since the name is a convenience
+and never gates the work.
+
+### Status words
+
+A session shows its status in parentheses after its current name, with the same
+script and one of these words:
+
+- `idle`: no work is left to do, the task is finished and nothing is queued;
+- `needs you`: it has asked the user something, needs a decision, or has a pull
+  request ready for review;
+- `waiting on CI`: it is waiting on a check or a run to finish;
+- `stuck`: it cannot go on without help and has said why;
+- `stopped`: it ended on an error or was stopped;
+- `working`: work goes on after this turn, such as a background task still
+  running, and nothing waits on the user.
+
+```bash
+python3 <voice-bridge-hooks folder>/session_title.py status "stuck"
+```
+
+The next section says when to set it, so the sidebar and the voice bridge show
+at a glance which sessions need attention. Naming the work with `work` takes the
+status away, and `status ""` takes it away without naming new work. A status
+never changes the base title, so the session is still reached by it; a long work
+name is shortened, or dropped, to make room for the status and is not restored.
+
+Only the top-level session sets its title and status. A subagent or other
+delegated agent runs inside the same session process, so it leaves both alone
+and the session reports for it.
+
+### Keep the title current
+
+When the voice plugin's hooks run, they set the status on their own and never change
+the work name: `working` when a prompt arrives, and at each stop `needs you` when the
+reply's last line ends in `?`, the wrap-up box asks something, or the turn added the
+review label to a pull request, `working` when background work is due to wake the
+session, and `idle` otherwise. The review label is the `reviewLabel` in the extension
+file, `.claude/skills/voice-bridge-hooks/extension.json`, or `Ready for Review` where
+the repository has no extension file; an extension file without `reviewLabel` and
+`readyLine` gives none. They run when the voice plugin is enabled and no settings file
+registers voice hook scripts of its own. Check once, when the work starts. The loop
+prints a `registers` line for each settings file that registers such scripts as hooks
+(permission rules that only name a script do not count), and a `plugin` line for each
+`voice@…` plugin setting a file holds, with its value. The files are read local settings
+first, then project, then user, and the first `plugin` line decides whether the plugin is
+enabled, because a higher scope overrides a lower one:
+
+```bash
+p=${CLAUDE_PROJECT_DIR:-$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")}
+for f in "$p/.claude/settings.local.json" "$p/.claude/settings.json" ~/.claude/settings.json; do
+  jq -e '[.hooks[]?[]?.hooks[]?.command // empty]
+    | any(test("voice_bridge_reply|speak-attention|session_title"))' "$f" >/dev/null 2>&1 \
+    && echo "registers: $f"
+  jq -r --arg f "$f" '.enabledPlugins // {} | to_entries[]
+    | select(.key | startswith("voice@")) | "plugin: \($f): \(.key)=\(.value)"' "$f" 2>/dev/null
+done
+```
+
+A first `plugin` line that ends `=true` and no `registers` line: the plugin's hooks run.
+A `registers` line: the status is set by hooks only when that file also registers
+`session_title.py hook prompt` and `session_title.py hook stop`; otherwise follow the rule
+for when they do not run, below. A first `plugin` line that ends `=false`, or no `plugin`
+line: the plugin is not enabled in these files, so follow that rule too. When in doubt,
+follow it as well: the hooks recompute `working` and `idle` at every stop, so setting them
+as well does no harm.
+
+When the hooks run, do not set `working` or `idle`. Before the final reply, set only a
+status they cannot work out: `waiting on CI`, `stuck` or `stopped`, or `needs you` for a
+decision, or a ready pull request that the reply neither asks about with a `?` nor
+labels with the hooks' review label in this turn (a different ready label does not
+count). A stop leaves these four words on the title, and a prompt the user types ends
+them, so set one again at the end of a turn that is still in that state. An automated
+event, such as a finished background task, leaves `waiting on CI`, `stuck` and `stopped`
+in place, so once one no longer holds, take it away with `status ""` and the next stop
+sets the right word.
+
+When the hooks do not run, at the end of every turn, before the final reply, check
+whether the session's work or status changed since its title was last set, and set the
+title only when it did. Read the title first:
+
+```bash
+python3 <voice-bridge-hooks folder>/session_title.py show
+```
+
+When the work name and the status already read as they should, do nothing, so a
+turn that changed neither costs no rename. Otherwise set the work, then the
+status, because naming the work takes a status away:
+
+```bash
+python3 <voice-bridge-hooks folder>/session_title.py work "issue #57 block fix"
+python3 <voice-bridge-hooks folder>/session_title.py status "working"
+```
+
+The title reads `<Repo> <n> - <work name> (<status>)`, such as
+`Overmind 1 - issue #57 block fix (working)`. The base title and its number stay
+as they are. The work name starts with the issue or pull request the session is
+on, written with a `#`, and a few words: `issue #57 block fix`,
+`PR #12 rename all sessions`. Keep it under 30 characters, so the status never
+clips it; when `show` reads the same work name and status, the title is current.
+The voice bridge's rename of every session writes the same format and the same
+status words, keeps a work name set here, and refreshes only one it wrote
+itself. The bridge's session listing renames only the work names it gave itself,
+so a name set here is left alone.
+
+When the hooks do not run, pick the status from what the session is doing at the end of
+the turn, from the words above only:
+
+- work goes on after this turn, such as a background task still running:
+  `working`;
+- asked a question, needs a decision, or reported the pull request ready for
+  review: `needs you`;
+- waiting on a check: `waiting on CI`;
+- cannot go on: `stuck`;
+- ended on an error or was stopped: `stopped`;
+- finished, nothing queued: `idle`.
+
+This applies to every session that follows this skill, whether or not it works
+an issue. A session answering a relayed voice request retitles the same way.
+The rename never gates the turn: if the script is missing or fails, go on.
+
 ## 4. Do the work
 
 Follow the issue's acceptance criteria literally. Deliver the whole scope, not
@@ -817,7 +956,8 @@ gh pr create --title "<type>: <summary> (#<N>)" --body-file <scratchpad>/pr-body
   deviation gate, by path and one line each with the run link that proved it,
   under a heading that names them as awaiting validation and the user's hand
   check.
-- Never run `gh pr merge`. The user merges.
+- Never run `gh pr merge`, except where the extension names an exception. The user
+  merges.
 - Never commit to `<default-branch>` directly.
 
 Then read the pull request's mergeable state and resolve any conflict before

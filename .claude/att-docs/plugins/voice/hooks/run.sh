@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # usage: run.sh <script> [args...] < <hook payload>
 # Runs one voice-bridge-hooks script for a session in any repository. hooks.json calls it
-# for every voice bridge hook, so the plugin's hooks work at user scope without the
+# for every voice hook, so the plugin's hooks work at user scope without the
 # repository carrying a hook entry of its own.
 #
 # The repository's extension file is .claude/skills/voice-bridge-hooks/extension.json; a
@@ -10,10 +10,10 @@
 # twice.
 here=$(dirname "$(readlink -f "$0")")
 
-# The running bridge names the voice plugin folder it runs from in voice-bridge/plugin. Claude
+# A Baton run from a checkout names the voice plugin folder it runs from in voice-bridge/plugin. Claude
 # Code refreshes its installed copy of this plugin only when the version changes, so the
 # runner hands the hook to that folder's runner instead, and the hooks run the same code as
-# the bridge. With no bridge folder named, or one without a runner, the installed copy runs.
+# Baton. With no folder named, or one without a runner, the installed copy runs.
 # The file and the runner it names must be this user's own, since without XDG_RUNTIME_DIR
 # the folder sits in /tmp, where anyone could write one.
 pointer=${XDG_RUNTIME_DIR:-/tmp}/voice-bridge/plugin
@@ -34,7 +34,7 @@ project=${CLAUDE_PROJECT_DIR:-$PWD}
 # usage: registers <settings file>; succeeds when a hook command in it runs a voice script.
 registers() {
   jq -e '[.hooks[]?[]?.hooks[]?.command // empty]
-    | any(test("voice_bridge_reply|speak-attention"))' "$1" >/dev/null 2>&1
+    | any(test("voice_bridge_reply|speak-attention|session_title"))' "$1" >/dev/null 2>&1
 }
 for settings in "$project/.claude/settings.json" "$project/.claude/settings.local.json" \
   "$HOME/.claude/settings.json"; do

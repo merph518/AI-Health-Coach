@@ -12,7 +12,11 @@ const list = (v) => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]);
 const blank = (v) => list(v).every((x) => String(x ?? '').trim() === '');
 const ids = (text) => String(text ?? '').split(/[;\n,]+/).map((s) => s.trim()).filter(Boolean);
 
-/** Sheets as readSheet reads them from a builder's rows: row 1 holds the headers, column 1 the first cell. */
+/**
+ * Sheets as readSheet reads them from a builder's rows, which lead with the headers; readSheet
+ * also reads a sheet with a title and a subtitle above its headers, so a builder that writes
+ * them in row 4 is read the same way.
+ */
 const sheetOf = (name, rows) => readSheet({ name, rows: [[], ...rows.map((r) => ['', ...r])] });
 
 /** The pack's sheets as { name, rows }, worked out from the pack the way a builder lays them out. */
@@ -34,8 +38,8 @@ export function derivedSheets(pack) {
       ['Overall Confidence', overall]]],
     ['Executive Summary', ['Item', 'Value'], [['Confidence', pack.executiveSummary?.confidence ?? '']]],
     ['Confidence Assessment', ['Item', 'Value'], [['Confidence level', overall]]],
-    ['Impact Analysis', ['Rule ID', 'Risk Level', 'Impact Classification'],
-      rules.map((rule) => [rule.id, rule.risk ?? '', rule.impact])],
+    ['Impact Analysis', ['Rule ID', 'Risk Level', 'Impact Classification', 'Status'],
+      rules.map((rule) => [rule.id, rule.risk ?? '', rule.impact, rule.status ?? ''])],
     ['Objective Matrix', ['Testing Objective', 'Applicable / Not Applicable', 'Related Test Cards',
       'Related Test Lab Test Set'], [...new Set(sets.map((set) => set.objective))].map((objective) => {
       const held = sets.filter((set) => set.objective === objective);
@@ -81,7 +85,8 @@ export const FILLED_GAP = /^(?:Not stated by the review\.|Not reviewed; coverage
 /** Dashboard counts that differ from the sheets they count. */
 function dashboard(view, out) {
   for (const m of dashboardCountMismatches(view)) {
-    out.warn('dashboard-count', `${m.label} reads ${m.stated}, but the sheet it counts has ${m.actual}.`);
+    out.warn('dashboard-count', `${m.label} reads ${m.stated}, but the sheet it counts has ${m.actual}`
+      + `${m.note ? ` (${m.note})` : ''}.`);
   }
 }
 
@@ -166,6 +171,9 @@ function ruleSets(view, out) {
   }
 }
 
+/** How the problem for a High-risk Not Impacted rule with no card and no reason reads after the rule ID. */
+export const NO_REASON_PROBLEM = 'is High risk and Not Impacted, but no regression card covers it and no reason is stated';
+
 /** High-risk Not Impacted rules with no regression card and no reason in the Coverage Matrix. */
 function regressionRules(view, out) {
   const regression = new Set(view.sets.filter((set) => /regression/i.test(set.objective))
@@ -178,8 +186,7 @@ function regressionRules(view, out) {
     const cards = expandIds(cell(row, 'Covered By Test Card(s)', 'Covered By Test Cards')).map((c) => c.id);
     const reason = gaps.get(rule);
     if (!cards.some((id) => regression.has(id)) && (blank(reason) || FILLED_GAP.test(String(reason).trim()))) {
-      out.fail('Coverage Matrix', `${rule} is High risk and Not Impacted, but no regression card covers `
-        + 'it and no reason is stated. Add a regression card, or state in its Gap / Concern why none is needed'
+      out.fail('Coverage Matrix', `${rule} ${NO_REASON_PROBLEM}. Add a regression card, or state in its Gap / Concern why none is needed`
         + `${cards.length ? '; a card covers it, so keep a covering status (Covered, Partially Covered or '
           + 'Weakly Covered) rather than Not Applicable' : ''}.`);
     }

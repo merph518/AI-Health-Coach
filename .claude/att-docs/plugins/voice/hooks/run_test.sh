@@ -8,7 +8,7 @@ trap 'rm -rf "$work"' EXIT
 fail=0
 export HOME=$work/nohome
 mkdir -p "$HOME"
-# A running bridge's voice-bridge/plugin would hand every call to the real runner.
+# A running Baton's voice-bridge/plugin would hand every call to the real runner.
 export XDG_RUNTIME_DIR=$work/runtime
 unset VOICE_HOOKS_LIVE
 
@@ -59,6 +59,36 @@ printf '%s\n' '{"permissions":{"allow":["Bash(scripts/speak-attention_test.sh)"]
 check "a permission naming a script is not a hook" "py --config $defaults x payload" \
   "$(CLAUDE_PROJECT_DIR=$work/allowed "$run" probe.py x <<<payload)"
 
+mkdir -p "$work/titled/.claude"
+printf '%s\n' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"x/session_title.py hook stop"}]}]}}' \
+  >"$work/titled/.claude/settings.json"
+check "steps aside when the project registers the title hook" "" \
+  "$(CLAUDE_PROJECT_DIR=$work/titled "$run" probe.py x <<<payload)"
+CLAUDE_PROJECT_DIR=$work/titled "$run" probe.py x </dev/null
+check "and exits 0" 0 $?
+
+mkdir -p "$work/titleperm/.claude"
+printf '%s\n' '{"permissions":{"allow":["Bash(python3 x/session_title.py show)"]}}' \
+  >"$work/titleperm/.claude/settings.json"
+check "a permission naming the title script is not a hook" "py --config $defaults x payload" \
+  "$(CLAUDE_PROJECT_DIR=$work/titleperm "$run" probe.py x <<<payload)"
+
+# Every hook the plugin registers names a script that sits in the skill folder.
+for entry in "session_title.py hook prompt" "session_title.py hook stop"; do
+  found=$(jq -r --arg e "$entry" '[.hooks[][].hooks[].command | select(contains($e))] | length' \
+    "$here/hooks.json")
+  check "hooks.json registers $entry once" 1 "$found"
+done
+scanned=$(jq -r '.hooks[][].hooks[].command | scan("run\\.sh\\\\?\"? ([A-Za-z0-9_.-]+)") | .[0]' \
+  "$here/hooks.json")
+check "the scan names a script for every hook that runs one" \
+  "$(jq '[.hooks[][].hooks[].command | select(contains("run.sh"))] | length' "$here/hooks.json")" \
+  "$(printf '%s\n' "$scanned" | grep -c .)"
+for script in $(printf '%s\n' "$scanned" | sort -u); do
+  [[ -f $here/../skills/voice-bridge-hooks/$script ]] ||
+    { echo "FAIL hooks.json names $script, which is not in the skill folder" >&2; fail=1; }
+done
+
 mkdir -p "$work/home/.claude"
 printf '%s\n' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"x/speak-attention.sh"}]}]}}' \
   >"$work/home/.claude/settings.json"
@@ -69,7 +99,7 @@ printf '%s\n' 'import sys; sys.exit(3)' >"$work/plugin/skills/voice-bridge-hooks
 CLAUDE_PROJECT_DIR=$work/bare "$run" fail.py </dev/null
 check "the script's exit code passes through" 3 $?
 
-# The bridge's plugin folder: a second copy whose probe says which copy ran.
+# Baton's plugin folder: a second copy whose probe says which copy ran.
 mkdir -p "$work/live/hooks" "$work/live/skills/voice-bridge-hooks" "$XDG_RUNTIME_DIR/voice-bridge"
 cp "$here/run.sh" "$work/live/hooks/run.sh"
 printf '{}\n' >"$work/live/skills/voice-bridge-hooks/defaults.json"
@@ -78,11 +108,11 @@ printf '%s\n' 'import sys; print("live", *sys.argv[1:], sys.stdin.read().strip()
 live_defaults="$work/live/skills/voice-bridge-hooks/defaults.json"
 pointer=$XDG_RUNTIME_DIR/voice-bridge/plugin
 printf '%s\n' "$work/live" >"$pointer"
-check "the bridge's plugin folder runs the hook" "live --config $live_defaults x payload" \
+check "Baton's plugin folder runs the hook" "live --config $live_defaults x payload" \
   "$(CLAUDE_PROJECT_DIR=$work/bare "$run" probe.py x <<<payload)"
-check "the bridge's runner runs its own copy" "live --config $live_defaults x payload" \
+check "Baton's runner runs its own copy" "live --config $live_defaults x payload" \
   "$(CLAUDE_PROJECT_DIR=$work/bare "$work/live/hooks/run.sh" probe.py x <<<payload)"
-check "the bridge's runner still steps aside" "" \
+check "Baton's runner still steps aside" "" \
   "$(CLAUDE_PROJECT_DIR=$work/hooked "$run" probe.py x <<<payload)"
 
 printf '%s\n' "$work/plugin" >"$pointer"

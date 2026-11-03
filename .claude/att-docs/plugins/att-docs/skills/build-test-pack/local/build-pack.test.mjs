@@ -7,26 +7,37 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { getEventListeners } from 'node:events';
+import http from 'node:http';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { addJob, claimStale, cutoffAfter, drainQueue, fillQueue, jobFrom, jobFromLine, jobStatus, lockHeld,
-  parseArgs, readQueue, removeJob,
+import { addJob, cancelJob, checkJob, claimStale, cutoffAfter, drainQueue, fillQueue, jobFrom, jobFromLine, jobStatus, lockHeld,
+  markRestore, parseArgs, queueLines, readQueue, removeJob, restoreLines, restorePaused, restoreUnits,
   summaryLines }
   from './build-pack.mjs';
-import { loadConfig, RULE_SHAPE } from './config.mjs';
+import { countedTries, HOLD_REASONS, loadConfig, MAX_MEMORY_STOPS, mainCheckout, memoryStops, RULE_SHAPE, rootRelative,
+  worktreeRefusal } from './config.mjs';
 import { rulesStale, shapeProblems, struckSpans, uncitedStruck } from './rules.mjs';
-import { createPauser, pausedPath } from './pause.mjs';
-import { ModelError, localEndpoint, modelClient } from './model.mjs';
-import { almDescriptions, batches, documentInputs, dropUnfoundedAssumptions, expectedProblems, phase5,
-  resultsAgree, setsOf, splitText } from './phases.mjs';
-import { runJob } from './run.mjs';
+import { createAppCloser } from './close-apps.mjs';
+import { createPauser, markRestoreFile, onPauseList, pausedPath, readPaused } from './pause.mjs';
+import { Cancelled, ModelError, localEndpoint, modelClient } from './model.mjs';
+import * as S from './schemas.mjs';
+import { estimateTokens } from './model.mjs';
+import { almDescriptions, batches, candidateLine, documentInputs, documentRules, dropUnfoundedAssumptions, expectedProblems, impactsText, phase5,
+  resultsAgree, setsOf, splitText, tidyDocument } from './phases.mjs';
+import { jobId, runJob } from './run.mjs';
+import { memoryLow, parseMeminfo, waitForMemory } from './meminfo.mjs';
 import { renderReport, reportData, seededRandom, spotChecks, writeReports } from './report.mjs';
-import { statusFields } from './status.mjs';
+import { createReleaser } from './release.mjs';
+import { sleepUnlessAborted } from './abort.mjs';
+import { jobLogs, readStatusLog, statusFields } from './status.mjs';
 import { readPack } from './pack.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures');
+// The fixtures can sit in a worktree of this repository; the worktree check has its own tests.
+process.env.BUILD_PACK_ALLOW_WORKTREE = '1';
 
 const fixtureInputs = () => JSON.parse(fs.readFileSync(path.join(FIXTURES, 'pipeline.json'), 'utf8')).inputs;
 
@@ -34,8 +45,10 @@ const fixtureInputs = () => JSON.parse(fs.readFileSync(path.join(FIXTURES, 'pipe
 function fixtureConfig(overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-'));
   const raw = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'pipeline.json'), 'utf8'));
-  Object.assign(raw, { repoRoot: FIXTURES, output: path.join(dir, 'out'),
-    queue: { file: path.join(dir, 'queue.json') } }, overrides);
+  // The memory check reads the machine running the tests, so it is off unless a test turns it on.
+  // The release step is off too, so no test unloads a real model; the release tests turn it on.
+  Object.assign(raw, { repoRoot: FIXTURES, output: path.join(dir, 'out'), memory: { enabled: false },
+    queue: { file: path.join(dir, 'queue.json') }, release: { command: [] } }, overrides);
   const file = path.join(dir, 'pipeline.json');
   fs.writeFileSync(file, JSON.stringify(raw));
   return loadConfig(file);
@@ -76,15 +89,28 @@ function fakeModel(answers = {}) {
       // Two empty lists keep the gates quiet: no conflicts, nothing missing.
       if ('conflicts' in value) value.conflicts = [];
       if ('missing' in value) value.missing = [];
+      if ('blockingMissing' in value) value.blockingMissing = [];
+      if ('decisionsRequired' in value) value.decisionsRequired = [];
+      if ('userReview' in value) value.userReview = [];
       if ('assumptionsToProceed' in value) value.assumptionsToProceed = [];
       if (Array.isArray(value.uncovered)) value.uncovered = [];
       if (Array.isArray(value.skipped)) value.skipped = [];
       // The checklist finds nothing unless a test plants a finding, so no fix round runs.
       if (request.schemaName.startsWith('phase9_checklist')) value.issues = [];
+      // A confidence field is a sentence that names a rule or card, as the call requires.
+      const field = /^phase9_confidence_(?!overall|steps)/.test(request.schemaName)
+        && Object.keys(request.schema.properties)[0];
+      if (field) {
+        const id = /\b(?:TC|BR)-[A-Za-z0-9.-]*\d\b/.exec(request.user.split('Cards and the rules they cite')[1] ?? '')?.[0] ?? '';
+        value[field] = `The ${field} is covered by ${id} and the cards around it in this pack.`;
+      }
       // A card call gets one card for each scenario it is offered.
       const offered = value.cards?.[0]?.scenario !== undefined
         && request.schema.properties.cards.items.properties.scenario.enum;
-      if (offered) value.cards = offered.map((id) => ({ ...value.cards[0], scenario: id }));
+      if (offered) {
+        value.cards = offered.map((id) => ({ ...value.cards[0], scenario: id, title: `title ${id}`,
+          mission: `mission ${id}`, focus: [`focus ${id}`] }));
+      }
       const [, override] = Object.entries(answers)
         .find(([prefix]) => request.schemaName.startsWith(prefix)) ?? [];
       if (override) value = typeof override === 'function' ? override(value, calls) : override;
@@ -94,6 +120,11 @@ function fakeModel(answers = {}) {
 }
 
 const read = (file) => fs.readFileSync(file, 'utf8');
+/** True when the job's status log already has a line for the phase and event. */
+const statusSeen = (config, job, phase, event) => {
+  const log = path.join(config.output, jobId(job), 'status.log');
+  return fs.existsSync(log) && statusLines(path.dirname(log)).some((l) => l.phase === phase && l.event === event);
+};
 const statusLines = (outDir) => read(path.join(outDir, 'status.log')).trim().split('\n')
   .map((line) => JSON.parse(line));
 
@@ -122,23 +153,120 @@ test('an issue pack builds end to end on the local model alone', async () => {
   // The retired rule keeps its place, says it was removed, and goes to Phase 3 like any other.
   const retired = pack.rules.find((rule) => rule.id === 'BR-LIB.UC01-006');
   assert.match(retired.summary, /^Retired: this rule was removed/);
+  // Its Status says so too, so a builder can show it without reading the summary; every other rule is Active.
+  assert.equal(retired.status, 'Retired');
+  assert.ok(pack.rules.filter((rule) => rule !== retired).every((rule) => rule.status === 'Active'));
   const scoped = model.calls.filter((call) => call.schemaName.startsWith('phase3'))
     .flatMap((call) => Object.keys(call.schema.properties.rules.properties));
   assert.ok(scoped.includes('BR-LIB.UC01-006'));
   const phase1 = model.calls.find((call) => call.schemaName.startsWith('phase1'));
   assert.match(phase1.user, /\[retired\] BR-LIB\.UC01-006/);
+  // The scope and card prompts ask for the retired status, Focus as steps and a result on every checking step.
+  assert.match(model.calls.find((call) => call.schemaName.startsWith('phase3')).user, /never classify it Superseded/);
+  assert.match(model.calls.find((call) => call.schemaName.startsWith('phase6_cards')).user,
+    /Focus lists the tester's actions in order, one item per step[\s\S]*Every step that checks something/);
+  assert.match(model.calls.find((call) => call.schemaName.startsWith('phase6_cards')).user,
+    /step 1 opens the stage through its entry\s+path[\s\S]*never invent a path/);
   assert.ok(pack.testCards.every((card) => /^TC-MOD-501-\d{3}$/.test(card.id)));
   const phases = statusLines(result.outDir).filter((l) => l.event === 'pass').map((l) => l.phase);
   assert.deepEqual(phases, ['intake', 'phase1', 'phase2', 'phase3', 'phase4', 'phase5', 'phase6',
-    'phase7', 'phase8', 'phase9-checklist', 'phase9-confidence', 'phase9-senior',
+    'phase7', 'phase8', 'phase9-checklist', 'phase9-senior', 'phase9-confidence',
     'phase9-revalidate', 'phase10', 'done']);
   // Reasoning is on for the judgment phases and off for extraction.
   const thinking = new Map(model.calls.map((c) => [c.schemaName.split('_')[0], c.reasoning]));
   // Phase 4 ends on its risk rating, an extraction; its impact analysis thinks.
-  assert.deepEqual(Object.fromEntries(thinking), { intake: false, phase1: true, phase3: true,
+  assert.deepEqual(Object.fromEntries(thinking), { intake: false, phase1: true, phase2: false, phase3: true,
     phase4: false, phase5: true, phase6: false, phase7: false, phase9: true, phase10: false });
   assert.equal(model.calls.find((c) => c.schemaName.startsWith('phase4_impact')).reasoning, true);
+  // Phase 9's checklist is a reading pass with thinking off; its other calls think.
+  const checklist = model.calls.filter((c) => c.schemaName.startsWith('phase9_checklist'));
+  assert.ok(checklist.length && checklist.every((c) => c.reasoning === false));
   assertContentFree(read(path.join(result.outDir, 'status.log')));
+});
+
+test('a document the config names takes its abbreviation as the module of its rules and cards', async () => {
+  const config = fixtureConfig({ moduleAbbreviations: { 'UC01-Card-Renewal': 'INV' } });
+  const model = fakeModel({ intake: (value) => ({ ...value,
+    documents: ['docs/LIB/UC01-Card-Renewal.md'] }) });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.ok(pack.rules.every((rule) => rule.module === 'INV'));
+  assert.ok(pack.testCards.every((card) => card.module === 'INV' && /^TC-INV-501-\d{3}$/.test(card.id)));
+});
+
+/** A model whose Phase 1 puts every document in one module, `Investigation`, abbreviated INV. */
+const oneModule = () => fakeModel({ intake: (value) => ({ ...value,
+  documents: ['docs/LIB/UC01-Card-Renewal.md', 'docs/LIB/UC02-Overdue-Fines.md'] }),
+phase1_understanding: (value) => {
+  for (const row of Object.values(value.modules)) Object.assign(row, { module: 'Investigation', abbreviation: 'INV' });
+  return value;
+} });
+
+test('a document of a module the config named for another document takes the same abbreviation', async () => {
+  const config = fixtureConfig({ moduleAbbreviations: { 'UC01-Card-Renewal': 'INV' } });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model: oneModule(), echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.deepEqual([...new Set(pack.rules.map((rule) => rule.sourceDocument))].length, 2);
+  assert.ok(pack.rules.every((rule) => rule.module === 'INV'));
+  assert.ok(pack.testCards.every((card) => card.module === 'INV' && /^TC-INV-501-\d{3}$/.test(card.id)));
+});
+
+test('the abbreviation a config names for one document of a module reaches the others whatever their order', async () => {
+  const config = fixtureConfig({ moduleAbbreviations: { 'UC02-Overdue-Fines': 'INV' } });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model: oneModule(), echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(new Set(pack.rules.map((rule) => rule.sourceDocument)).size, 2);
+  assert.ok(pack.rules.every((rule) => rule.module === 'INV'));
+});
+
+test('a suite keeps a configured abbreviation for its document whatever the order, and numbers the others apart', async () => {
+  const config = fixtureConfig({ moduleAbbreviations: { UC02: 'INV' } });
+  const model = fakeModel({ phase1_understanding: (value) => {
+    for (const row of Object.values(value.modules)) Object.assign(row, { module: 'Investigation', abbreviation: 'INV' });
+    return value;
+  } });
+  const result = await runJob(config, { suite: 'LIB' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const ids = JSON.parse(read(result.packPath)).testCards.map((card) => card.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('two documents of one module cannot be named different abbreviations in an issue pack', async () => {
+  const config = fixtureConfig({ moduleAbbreviations: { 'UC01-Card-Renewal': 'INV', 'UC02-Overdue-Fines': 'INX' } });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model: oneModule(), echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'gate:abbreviation-shared');
+});
+
+test('a suite cannot give two documents one configured abbreviation, since each numbers its own cards', async () => {
+  const config = fixtureConfig({ moduleAbbreviations: { Investigation: 'INV' } });
+  const model = fakeModel({ phase1_understanding: (value) => {
+    for (const row of Object.values(value.modules)) Object.assign(row, { module: 'Investigation', abbreviation: 'INV' });
+    return value;
+  } });
+  const result = await runJob(config, { suite: 'LIB' }, { model, echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'gate:abbreviation-shared');
+});
+
+test('every rule carries a status: derived rules and a suite\'s merged rules are Active', async () => {
+  const failing = ['node', '-e', 'process.stderr.write("{doc} is not in the doc map"); process.exit(1)'];
+  const allowed = fixtureConfig({ allowDerivedRules: true,
+    inputs: { ...fixtureInputs(), ruleExport: failing, noRules: 'is not in the doc map' } });
+  const derived = await runJob(allowed, { issue: '501', change: '7001' }, { model: fakeModel(), echo: false });
+  assert.equal(derived.ok, true, JSON.stringify(derived));
+  const pack = JSON.parse(read(derived.packPath));
+  assert.ok(pack.rules.length && pack.rules.every((rule) => rule.status === 'Active'));
+  const suite = await runJob(fixtureConfig(), { suite: 'LIB' }, { model: fakeModel(), echo: false });
+  assert.ok(JSON.parse(read(suite.packPath)).rules.every((rule) => rule.status === 'Active'));
+});
+
+test('a configured abbreviation must be 2 to 6 upper-case letters or digits', () => {
+  assert.throws(() => fixtureConfig({ moduleAbbreviations: { UC01: 'inv' } }),
+    /moduleAbbreviations\.UC01/);
 });
 
 test('a suite pack builds through the repository\'s merge', async () => {
@@ -172,16 +300,21 @@ const runLib = ({ model, config }) => runJob(config, { issue: '501', change: '70
   { model, echo: false });
 const phase6Pass = (outDir) => statusLines(outDir).find((l) => l.event === 'pass' && l.phase === 'phase6');
 
-/** An inventory reply of the given scenarios; each takes the rule at its index unless it names a `rule` index. */
+/**
+ * An inventory reply of the given scenarios; each takes the rule at its index unless it names a `rule` index.
+ * Rules no spec names go on the last scenario, so none is left for the pass that gives a rule its own scenario.
+ */
 const inventory = (specs) => (value) => {
   const ids = value.scenarios[0].rules;
+  const picked = specs.map((spec, i) => spec.rule ?? i % ids.length);
+  const rest = ids.filter((_, k) => !picked.includes(k));
   return { ...value, scenarios: specs.map((spec, i) => ({ kind: 'decision', outcome: 'outcome',
     action: `action ${i}`, population: `population ${i}`, ...spec,
-    rules: [ids[spec.rule ?? i % ids.length]] })) };
+    rules: [ids[picked[i]], ...(i === specs.length - 1 ? rest : [])] })) };
 };
 const BREAK = { kind: 'break' };
 const titled = (value) => ({ ...value,
-  cards: value.cards.map((card) => ({ ...card, title: `Card ${card.scenario}` })) });
+  cards: value.cards.map((card) => ({ ...card, title: `Case ${card.scenario}` })) });
 const setCards = (pack, objective) => {
   const set = pack.testSets.find((row) => row.objective === objective);
   return set ? set.cards.map((id) => pack.testCards.find((c) => c.id === id).title).sort() : [];
@@ -210,14 +343,14 @@ test('the scenario inventory is asked first and its scenarios and earlier cards 
   assert.match(cardCalls[0].user, /S1 \| decision \| rules \S+ \| population 0 \| action 0 \| outcome/);
   assert.match(cardCalls[1].user, /S3 \| decision \| rules \S+ \| population 2 \| action 2/);
   assert.ok(!cardCalls[1].user.includes('population 0'));
-  assert.ok(!cardCalls[0].user.includes('Card S1'));
-  assert.match(cardCalls[1].user, /Cards written so far[^]*Card S1 \| S1 \| rules /);
+  assert.ok(!cardCalls[0].user.includes('Case S1'));
+  assert.match(cardCalls[1].user, /Cards written so far[^]*Case S1 \| S1 \| rules /);
   // A card names a scenario that is still open, and no other.
   assert.deepEqual(cardCalls[1].schema.properties.cards.items.properties.scenario.enum,
     ['S3', 'S4', 'S5']);
   const pack = JSON.parse(read(result.packPath));
-  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Card S1', 'Card S2', 'Card S3',
-    'Card S4', 'Card S5']);
+  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Case S1', 'Case S2', 'Case S3',
+    'Case S4', 'Case S5']);
   assert.equal(phase6Pass(result.outDir).scenarios, 5);
 });
 
@@ -226,13 +359,18 @@ test('the inventory asks for control, isolation, combined, persistence and break
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
   const call = run.model.calls.find((c) => c.schemaName === 'phase6_scenarios_d1');
-  const kinds = ['control', 'isolation', 'combined', 'persistence'];
+  const kinds = ['control', 'isolation', 'combined', 'persistence', 'negative', 'role',
+    'state-change', 'manual-batch', 'navigation', 're-entry'];
   const props = call.schema.properties;
   assert.ok([...kinds, 'break'].every((k) => props.scenarios.items.properties.kind.enum.includes(k)));
   assert.deepEqual([...props.kindChecks.required].sort(), [...kinds, 'break'].sort());
   assert.deepEqual(Object.keys(props.kindChecks.properties).sort(), [...kinds, 'break'].sort());
   for (const kind of [...kinds, 'break']) assert.ok(call.user.includes(kind), `the task names ${kind}`);
   assert.ok(props.scenarios.maxItems >= 1);
+  assert.match(call.user, /no blocking condition/);
+  assert.match(call.user, /Reset restoring/);
+  assert.match(call.user, /selected one only/);
+  assert.match(call.user, /stage under test[\s\S]*how the tester reaches it[\s\S]*which child/);
   // The fake lists only a control scenario, so the other three kinds are noted.
   const pack = JSON.parse(read(result.packPath));
   for (const kind of kinds.slice(1)) {
@@ -242,6 +380,8 @@ test('the inventory asks for control, isolation, combined, persistence and break
   // The break pass found one, so its note is gone.
   assert.ok(run.model.calls.some((c) => c.schemaName === 'phase6_scenarios_d1_break'));
   assert.ok(!pack.assumptions.some((a) => a.assumption.includes('no break scenario')));
+  // Every card is a Requirement card, so the pack says why none is quality-derived.
+  assert.ok(pack.assumptions.some((a) => a.assumption === 'No card in this pack is quality-derived.'));
 });
 
 test('scenarios and cards that repeat the same kind, rules, population and action collapse to one', async () => {
@@ -255,7 +395,7 @@ test('scenarios and cards that repeat the same kind, rules, population and actio
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
   const pack = JSON.parse(read(result.packPath));
-  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Card S1', 'Card S2', 'Card S3']);
+  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Case S1', 'Case S2', 'Case S3']);
   // One scenario dropped from the inventory, one repeated card.
   const pass = phase6Pass(result.outDir);
   assert.equal(pass.duplicates, 2);
@@ -307,9 +447,9 @@ test('a gap on a rule in one batch does not settle another scenario on that rule
   const second = run.model.calls.find((c) => c.schemaName === 'phase6_cards_d1_2');
   assert.ok(second.schema.properties.cards.items.properties.scenario.enum.includes('S3'));
   const pack = JSON.parse(read(result.packPath));
-  assert.ok(pack.testCards.some((c) => c.title === 'Card S3'));
+  assert.ok(pack.testCards.some((c) => c.title === 'Case S3'));
   // S1 stayed open and a later call covered it; nothing is recorded as lost.
-  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Card S1', 'Card S2', 'Card S3', 'Card S4']);
+  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Case S1', 'Case S2', 'Case S3', 'Case S4']);
   assert.equal(phase6Pass(result.outDir).unsettled, 0);
 });
 
@@ -325,7 +465,7 @@ test('a later card on a rule does not unsettle a scenario already skipped', asyn
   assert.equal(phase6Pass(result.outDir).unsettled, 0);
   const pack = JSON.parse(read(result.packPath));
   assert.ok(!pack.assumptions.some((a) => a.assumption.includes('scenario S1')));
-  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Card S2', 'Card S3']);
+  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Case S2', 'Case S3']);
 });
 
 test('a rule only an existing test covers says so, and points at the test', async () => {
@@ -392,7 +532,7 @@ const SETS = (value) => ({ ...value, cards: value.cards.map((card) => {
   const base = ['Core Change Validation', 'Workflow Validation', 'Negative / Exclusion', 'Regression Testing'];
   const row = { S1: ['Requirement', base], S2: ['Requirement', base],
     S3: ['Quality', [...base, 'Full Coverage Required Run', 'BREAK IT']] }[card.scenario];
-  return { ...card, title: `Card ${card.scenario}`, derivation: row[0], objectives: row[1] };
+  return { ...card, title: `Case ${card.scenario}`, derivation: row[0], objectives: row[1] };
 }) });
 
 test('Full Coverage holds every requirement card and BREAK IT only the break scenarios, in several sets at once', async () => {
@@ -401,10 +541,10 @@ test('Full Coverage holds every requirement card and BREAK IT only the break sce
   assert.equal(result.ok, true, JSON.stringify(result));
   const pack = JSON.parse(read(result.packPath));
   // One card per scenario, and no card twice in a set.
-  assert.deepEqual(setCards(pack, 'Full Coverage Required Run'), ['Card S1', 'Card S2']);
-  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Card S2']);
-  // The BREAK IT card is also in its ordinary sets and in Full Coverage.
-  assert.deepEqual(setCards(pack, 'Core Change Validation'), ['Card S1', 'Card S2', 'Card S3']);
+  assert.deepEqual(setCards(pack, 'Full Coverage Required Run'), ['Case S1', 'Case S2']);
+  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Case S2']);
+  // The BREAK IT card is also in Full Coverage and its other ordinary sets, but not in the core set.
+  assert.deepEqual(setCards(pack, 'Core Change Validation'), ['Case S1', 'Case S3']);
   assert.ok(pack.testSets.every((set) => set.cards.length === new Set(set.cards).size));
 });
 
@@ -414,9 +554,9 @@ test('exclusiveSets keeps a BREAK IT card in the BREAK IT set alone', async () =
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
   const pack = JSON.parse(read(result.packPath));
-  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Card S2']);
-  assert.deepEqual(setCards(pack, 'Full Coverage Required Run'), ['Card S1']);
-  assert.deepEqual(setCards(pack, 'Core Change Validation'), ['Card S1', 'Card S3']);
+  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Case S2']);
+  assert.deepEqual(setCards(pack, 'Full Coverage Required Run'), ['Case S1']);
+  assert.deepEqual(setCards(pack, 'Core Change Validation'), ['Case S1', 'Case S3']);
 });
 
 test('with no break scenario listed, a targeted pass asks for break scenarios only and writes their cards', async () => {
@@ -432,7 +572,7 @@ test('with no break scenario listed, a targeted pass asks for break scenarios on
   assert.ok(!('kindChecks' in pass.schema.properties));
   assert.match(pass.user, /Scenarios listed so far[^]*S1 \| decision/);
   const pack = JSON.parse(read(result.packPath));
-  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Card S3']);
+  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Case S3']);
   assert.equal(pack.objectives.find((r) => r.objective === 'BREAK IT').applicable, true);
   assert.equal(pack.testCards.length, 3);
 });
@@ -460,7 +600,7 @@ test('an ordinary objective no card names is put to the model against the cards 
   assert.deepEqual(asked[0].schema.properties.cards.items.enum, ['C1', 'C2', 'C3']);
   const pack = JSON.parse(read(result.packPath));
   assert.equal(pack.testCards.length, 3);
-  assert.deepEqual(setCards(pack, 'Workflow Validation'), ['Card S1', 'Card S2', 'Card S3']);
+  assert.deepEqual(setCards(pack, 'Workflow Validation'), ['Case S1', 'Case S2', 'Case S3']);
 });
 
 test('an ordinary objective no card serves is dropped when the model names none', async () => {
@@ -472,6 +612,58 @@ test('an ordinary objective no card serves is dropped when the model names none'
   const row = pack.objectives.find((r) => r.objective === 'Workflow Validation');
   assert.equal(row.applicable, false);
   assert.deepEqual(setCards(pack, 'Workflow Validation'), []);
+});
+
+const DROP_RUN = {
+  phase6_scenarios: inventory([{}, {}, BREAK]), phase6_cards: NO_WORKFLOW,
+  phase6_objective: (value) => ({ ...value, cards: [] }),
+};
+
+test('a dropped objective gets a reason of its own and a limitation, not the old reason with a suffix', async () => {
+  const run = lib({ ...DROP_RUN });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  const row = pack.objectives.find((r) => r.objective === 'Workflow Validation');
+  assert.equal(row.applicable, false);
+  assert.doesNotMatch(row.reason, /could be designed|can be designed|could be tested|can be tested|no test card could/i);
+  assert.match(row.reason, /^Not tested in this pack: no test card serves it/);
+  assert.match(pack.limitations['Objective Matrix'], /Applicable but untested: no test card serves Workflow Validation/);
+});
+
+test('a dropped objective keeps the pack from the highest confidence level and the call is told', async () => {
+  const run = lib({ ...DROP_RUN,
+    phase9_confidence_overall: (value) => ({ ...value, overall: 'High', reason: 'BR-1 is covered.' }) });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.confidence.overall, 'Medium');
+  assert.match(pack.confidence.reason, /No test card serves Workflow Validation/);
+  const call = run.model.calls.find((c) => c.schemaName === 'phase9_confidence_overall');
+  assert.match(call.user, /Objectives applicable but untested/);
+  assert.match(call.user, /Workflow Validation/);
+});
+
+test('a capped rating does not leave a reason that states the level it replaced', async () => {
+  const run = lib({ ...DROP_RUN, phase9_confidence_overall: (value) => ({ ...value, overall: 'High',
+    reason: 'Overall confidence is High because BR-1 is covered.' }) });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.confidence.overall, 'Medium');
+  assert.doesNotMatch(pack.confidence.reason, /confidence is High/i);
+  assert.doesNotMatch(pack.executiveSummary.confidence, /confidence is High/i);
+});
+
+test('a pack with no dropped objective has no objective limitation and keeps a High rating', async () => {
+  const run = lib({ phase6_scenarios: inventory([{}, {}, BREAK]), phase6_cards: NO_WORKFLOW,
+    phase6_objective: (value) => ({ ...value, cards: ['C1'] }),
+    phase9_confidence_overall: (value) => ({ ...value, overall: 'High', reason: 'BR-1 is covered.' }) });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.limitations?.['Objective Matrix'], undefined);
+  assert.equal(pack.confidence.overall, 'High');
 });
 
 test('Full Coverage is applicable whenever a requirement card exists', async () => {
@@ -488,7 +680,7 @@ test('Full Coverage is applicable whenever a requirement card exists', async () 
   const row = pack.objectives.find((r) => r.objective === 'Full Coverage Required Run');
   assert.equal(row.applicable, true);
   assert.equal(row.reason, 'Applicable: this set holds every requirement-derived card.');
-  assert.deepEqual(setCards(pack, 'Full Coverage Required Run'), ['Card S1', 'Card S2']);
+  assert.deepEqual(setCards(pack, 'Full Coverage Required Run'), ['Case S1', 'Case S2']);
 });
 
 test('Full Coverage stays not applicable when exclusiveSets leaves no card for it', async () => {
@@ -505,7 +697,7 @@ test('Full Coverage stays not applicable when exclusiveSets leaves no card for i
   const row = pack.objectives.find((r) => r.objective === 'Full Coverage Required Run');
   assert.equal(row.applicable, false);
   assert.deepEqual(setCards(pack, 'Full Coverage Required Run'), []);
-  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Card S1', 'Card S2']);
+  assert.deepEqual(setCards(pack, 'BREAK IT'), ['Case S1', 'Case S2']);
 });
 
 test('a reason that ends in a period does not double it in a coverage gap', async () => {
@@ -544,6 +736,24 @@ test('the set objectives and the cards per call come from config, with the usual
   assert.throws(() => fixtureConfig({ cardRulesPerCall: 4 }), /cardScenariosPerCall/);
 });
 
+test('objectiveEvidence defaults to no rules and is checked rule by rule', () => {
+  assert.deepEqual(fixtureConfig().objectiveEvidence, []);
+  const rule = { id: 'closure', objective: '^integration', claim: 'the change closes a stage',
+    terms: ['stage'], reason: 'The stage closes.' };
+  assert.deepEqual(fixtureConfig({ objectiveEvidence: [rule] }).objectiveEvidence, [rule]);
+  const bad = (change, pattern) => assert.throws(
+    () => fixtureConfig({ objectiveEvidence: [{ ...rule, ...change }] }), pattern, JSON.stringify(change));
+  assert.throws(() => fixtureConfig({ objectiveEvidence: 'x' }), /objectiveEvidence must be a list/);
+  bad({ extra: 1 }, /unknown key: extra/);
+  bad({ id: '1 bad' }, /objectiveEvidence\[0\]\.id/);
+  bad({ objective: '(' }, /objectiveEvidence\[0\]\.objective is not a valid pattern/);
+  bad({ claim: '' }, /\.claim/);
+  bad({ reason: undefined }, /\.reason/);
+  bad({ terms: [] }, /\.terms must be a non-empty list/);
+  bad({ terms: ['ok', '['] }, /objectiveEvidence\[0\]\.terms\[1\] is not a valid pattern/);
+  assert.throws(() => fixtureConfig({ objectiveEvidence: [rule, rule] }), /repeats closure/);
+});
+
 test('a failed gate stops the run with a content-free status line', async () => {
   const config = fixtureConfig();
   const model = fakeModel({ phase1: (value) => ({ ...value,
@@ -559,6 +769,118 @@ test('a failed gate stops the run with a content-free status line', async () => 
   // The conflict's text stays in the local detail log.
   assert.ok(read(path.join(result.outDir, 'detail.log')).includes('renewal expiry'));
   assert.ok(!fs.readdirSync(result.outDir).some((name) => name.endsWith('.xlsx')));
+});
+
+test('blocking missing information stops the gate with a content-free status line', async () => {
+  const config = fixtureConfig();
+  const model = fakeModel({ phase1: (value) => ({ ...value,
+    blockingMissing: ['The renewal fee table named on page 7 was not received'] }) });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'gate:missing-information');
+  const last = statusLines(result.outDir).at(-1);
+  assert.equal(last.missing, 1);
+  assertContentFree(read(path.join(result.outDir, 'status.log')));
+  assert.ok(read(path.join(result.outDir, 'work', 'phase1-missing.json')).includes('renewal fee table'));
+  assert.ok(!fs.readdirSync(result.outDir).some((name) => name.endsWith('.xlsx')));
+});
+
+test('phase 1 keeps the confidence reason and each source\'s information and direct impact', async () => {
+  const config = fixtureConfig();
+  const model = fakeModel();
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  for (const row of pack.sourceDocuments) {
+    assert.equal(typeof row.informationObtained, 'string');
+    assert.equal(typeof row.directImpact, 'boolean');
+  }
+  const summary = JSON.parse(read(path.join(result.outDir, 'work', 'phase1-summary.json')));
+  assert.equal(typeof summary.confidenceReason, 'string');
+  const keys = Object.keys(model.calls.find((c) => c.schemaName.startsWith('phase1_understanding'))
+    .schema.properties.summary.properties);
+  assert.ok(keys.indexOf('confidenceReason') < keys.indexOf('confidence'));
+});
+
+test('rules too large for one Phase 1 call are read in batches and their findings stop the gate', async () => {
+  const name = withMaster((row) => { row.rule_summary = `${row.rule_summary} ${'x'.repeat(30000)}`; });
+  try {
+    const inputs = { ...fixtureInputs(), ruleExport: ['node', 'export.mjs', '--doc', '{doc}', '--master', name] };
+    const run = lib({}, { inputs });
+    const result = await runLib(run);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const calls = run.model.calls.filter((c) => /^phase1_rules_\d+$/.test(c.schemaName));
+    assert.ok(calls.length >= 2, `${calls.length} rule calls`);
+    const ids = calls.map((c) => Object.keys(c.schema.properties.rules.properties));
+    assert.ok(ids[0].every((id) => !ids[1].includes(id)));
+    const final = run.model.calls.find((c) => c.schemaName.startsWith('phase1_understanding'));
+    assert.ok(!/rule\(s\)/.test(final.user));
+    const stopped = lib({ phase1_rules_1: (value) => ({ ...value, blockingMissing: ['No fee table'] }) },
+      { inputs });
+    assert.equal((await runLib(stopped)).reason, 'gate:missing-information');
+    const conflicted = lib({ phase1_rules_2: (value) => ({ ...value, conflicts: ['A and B disagree'] }) },
+      { inputs });
+    assert.equal((await runLib(conflicted)).reason, 'gate:source-conflict');
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+test('Phase 3 sends every rule that fits in one call, and tells each batch of a split that it is a part', async () => {
+  const one = lib({});
+  assert.equal((await runLib(one)).ok, true);
+  const single = one.model.calls.filter((c) => c.schemaName.startsWith('phase3'));
+  assert.equal(single.length, 1);
+  assert.ok(!/The rules come in/.test(single[0].user));
+  // The room shrinks once Phase 1 is done, so only the scope calls are split.
+  const config = fixtureConfig();
+  const shrink = (value) => {
+    Object.assign(config.model, { context: 6000, reasoningOutput: 500, maxOutput: 500, retryOutput: 500 });
+    return value;
+  };
+  const model = fakeModel({ ...INTAKE, ...NOT_REMOVAL, phase1_understanding: shrink });
+  const name = withMaster((row) => { row.rule_summary = `${row.rule_summary} ${'word '.repeat(400)}`; });
+  try {
+    config.inputs = { ...config.inputs,
+      ruleExport: ['node', 'export.mjs', '--doc', '{doc}', '--master', name] };
+    await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+    const calls = model.calls.filter((c) => c.schemaName.startsWith('phase3'));
+    assert.ok(calls.length >= 2, `${calls.length} scope calls`);
+    calls.forEach((call, i) => {
+      assert.match(call.user, new RegExp(`part ${i + 1} of ${calls.length}\\. The other rules are classified`));
+      assert.match(call.user, /never assume a rule is missing/);
+    });
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+test('a decision the user must make stops intake as USER DECISION REQUIRED', async () => {
+  const config = fixtureConfig();
+  const model = fakeModel({ intake_inventory: (value) => ({ ...value,
+    decisionsRequired: ['Which of two renewal policies applies'] }) });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'gate:user-decision-required');
+  const pack = JSON.parse(read(path.join(result.outDir, 'work', 'partial-pack.json')));
+  assert.equal(pack.intake.readiness, 'USER DECISION REQUIRED');
+  assert.ok(read(path.join(result.outDir, 'work', 'intake-decisions.json')).includes('renewal policies'));
+  assertContentFree(read(path.join(result.outDir, 'status.log')));
+});
+
+test('secondary requests are kept at intake and do not stop the job', async () => {
+  const config = fixtureConfig();
+  const model = fakeModel({ intake_inventory: (value) => ({ ...value,
+    secondaryRequests: ['Also update the fines wording'] }) });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.deepEqual(pack.intake.secondaryRequests, ['Also update the fines wording']);
+});
+
+test('a candidate document line shows its section headings', () => {
+  const line = candidateLine('docs/LIB/UC01.md', '# Card Renewal\n\nSource: UC01.docx\n\n## Expiry\n\n### Grace period\n');
+  assert.match(line, /Card Renewal; Expiry; Grace period; source: UC01.docx/);
 });
 
 test('a missing description stops intake', async () => {
@@ -599,12 +921,12 @@ test('repairs are bounded: a FAIL the model cannot fix stops the run', async () 
 
 test('a prompt too big for the context is refused, not truncated', async () => {
   const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
-    context: 3000, maxOutput: 500, reasoningOutput: 500 } });
+    context: 6000, maxOutput: 500, reasoningOutput: 500 } });
   const model = fakeModel();
   const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
   assert.equal(result.ok, false);
   // Intake fits; the documents do not, even as digests, and nothing is cut to make them.
-  assert.match(result.reason, /too-big/);
+  assert.equal(result.reason, 'gate:documents-too-big');
 });
 
 test('only a loopback endpoint is accepted', () => {
@@ -651,25 +973,198 @@ test('no pipeline module reaches the network except the model client', () => {
   }
 });
 
-test('a cut-off reply is retried once with thinking off', async () => {
-  let calls = 0;
+/** An ask context over a fake server; `finish(body, n)` gives call n's finish reason. */
+async function askOver(finish, { model = {}, phase = 'phase1', step = 's', reasoning = true, tokens = 10 } = {}) {
+  const bodies = [];
   const fetchImpl = async (url, options) => {
-    calls += 1;
     const body = JSON.parse(options.body);
-    const finish = body.chat_template_kwargs.enable_thinking ? 'length' : 'stop';
-    return { ok: true, json: async () => ({ choices: [{ finish_reason: finish,
-      message: { content: '{"ok":true}' } }], usage: {} }) };
+    bodies.push(body);
+    const how = finish(body, bodies.length);
+    if (how === 'no-body') return { ok: true, json: async () => { throw new SyntaxError('x'); } };
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: how,
+      message: { content: '{"ok":true}' } }], usage: { completion_tokens: 7 } }) };
   };
-  const config = fixtureConfig();
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm', ...model } });
   const { ask } = await import('./phases.mjs');
-  const logs = { status() {}, detail() {} };
-  const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, logs, job: { id: 'j' },
+  const lines = [];
+  const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, job: { id: 'j' },
+    logs: { status: (fields) => lines.push(fields), detail() {} },
     model: { ...modelClient({ endpoint: 'http://localhost:1/v1', name: 'm', fetchImpl }),
-      countTokens: async () => 10 } };
-  const value = await ask(ctx, { phase: 'phase1', step: 's', reasoning: true, inputs: [],
+      countTokens: async () => tokens, contextWindow: async () => null } };
+  const run = () => ask(ctx, { phase, step, reasoning, inputs: [],
     schema: { type: 'object' }, task: 't' });
-  assert.deepEqual(value, { ok: true });
-  assert.equal(calls, 2);
+  return { run, bodies, lines, ctx };
+}
+
+test('a thinking reply cut off at length is retried once with thinking off and the smaller retry cap', async () => {
+  const { run, bodies, lines } = await askOver((body) => (
+    body.chat_template_kwargs.enable_thinking ? 'length' : 'stop'));
+  assert.deepEqual(await run(), { ok: true });
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(bodies.map((body) => body.max_tokens), [40960, 8192]);
+  const retry = lines.find((line) => line.event === 'retry');
+  assert.equal(retry.reasoning, true);
+  assert.equal(retry.maxTokens, 40960);
+  assert.equal(retry.reason, 'length');
+});
+
+test('a thinking call that fails without being cut off is retried at the plain cap', async () => {
+  const { run, bodies } = await askOver((body, n) => (n === 1 ? 'no-body' : 'stop'));
+  assert.deepEqual(await run(), { ok: true });
+  assert.deepEqual(bodies.map((body) => body.max_tokens), [40960, 16384]);
+  assert.equal(bodies[1].chat_template_kwargs.enable_thinking, false);
+});
+
+test('a reply cut off with thinking off is not retried', async () => {
+  const { run, bodies, lines } = await askOver(() => 'length', { reasoning: false });
+  await assert.rejects(run(), (error) => error.code === 'length');
+  assert.equal(bodies.length, 1);
+  const fail = lines.find((line) => line.event === 'call-fail');
+  assert.equal(fail.reason, 'length');
+  assert.equal(fail.reasoning, false);
+  assert.equal(fail.maxTokens, 16384);
+  assert.ok(!lines.some((line) => line.event === 'retry' || line.event === 'fail'));
+});
+
+test('a thinking cut-off whose retry is also cut off fails as runaway', async () => {
+  const { run, bodies, lines } = await askOver(() => 'length');
+  await assert.rejects(run(), (error) => error.code === 'runaway' && error.usage.outputTokens === 7);
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(bodies.map((body) => body.max_tokens), [40960, 8192]);
+  const fail = lines.find((line) => line.event === 'call-fail');
+  assert.equal(fail.reason, 'runaway');
+  assert.equal(fail.attempt, 2);
+  const config = fixtureConfig();
+  const model = fakeModel({ phase1_understanding: () => { throw new ModelError('runaway', 'x'); } });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'model:runaway');
+});
+
+test('a per-phase reasoning cap lowers max_tokens for that phase only', async () => {
+  const model = { reasoningOutputByPhase: { phase9: 12288 } };
+  const capped = await askOver(() => 'stop', { model, phase: 'phase9' });
+  await capped.run();
+  const other = await askOver(() => 'stop', { model, phase: 'phase1' });
+  await other.run();
+  assert.deepEqual([capped.bodies[0].max_tokens, other.bodies[0].max_tokens], [12288, 40960]);
+  const plain = await askOver(() => 'stop', { model, phase: 'phase9', reasoning: false });
+  await plain.run();
+  assert.equal(plain.bodies[0].max_tokens, 16384);
+});
+
+test('a thinking call that fails without a reply and is then cut off ends as length, not runaway', async () => {
+  const { run, bodies, lines } = await askOver((body, n) => (n === 1 ? 'no-body' : 'length'));
+  await assert.rejects(run(), (error) => error.code === 'length');
+  assert.deepEqual(bodies.map((body) => body.max_tokens), [40960, 16384]);
+  assert.equal(lines.find((line) => line.event === 'call-fail').reason, 'length');
+});
+
+test('a prompt that fits the first cap but not a retry cap is refused as too-big before any call', async () => {
+  // Window 60000: 50000 prompt tokens fit a 2048 phase cap but not the 16384 plain cap a retry can use.
+  const model = { context: 60000, reasoningOutput: 20000, reasoningOutputByPhase: { phase9: 2048 } };
+  const big = await askOver(() => 'stop', { model, phase: 'phase9', tokens: 50000 });
+  await assert.rejects(big.run(), (error) => error.code === 'too-big' && error.promptTokens === 50000);
+  assert.equal(big.bodies.length, 0);
+  const small = await askOver(() => 'stop', { model, phase: 'phase9', tokens: 40000 });
+  assert.deepEqual(await small.run(), { ok: true });
+  // With thinking off the first cap is the only one, so the same prompt is sent.
+  const plain = await askOver(() => 'stop', { model, phase: 'phase9', reasoning: false, tokens: 40000 });
+  assert.deepEqual(await plain.run(), { ok: true });
+});
+
+test('a model that runs away through a real client fails the job as model:runaway', async () => {
+  const answers = fakeModel({ ...INTAKE });
+  const bodies = [];
+  const fetchImpl = async (url, options) => {
+    const body = JSON.parse(options.body);
+    bodies.push(body);
+    if (body.chat_template_kwargs.enable_thinking) {
+      return { ok: true, json: async () => ({ choices: [{ finish_reason: 'length',
+        message: { content: '{"a":' } }], usage: { completion_tokens: 7 } }) };
+    }
+    const { schema, name } = body.response_format.json_schema;
+    // Thinking off still runs away once a thinking call has been cut.
+    const cutAgain = bodies.some((earlier) => earlier.chat_template_kwargs.enable_thinking);
+    const { value } = await answers.json({ schema, schemaName: name });
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: cutAgain ? 'length' : 'stop',
+      message: { content: JSON.stringify(value) } }], usage: { completion_tokens: 7 } }) };
+  };
+  const model = { ...modelClient({ endpoint: 'http://localhost:1/v1', name: 'm', fetchImpl }),
+    countTokens: async () => 10, contextWindow: async () => null };
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'model:runaway');
+  assert.deepEqual(bodies.slice(-2).map((body) => body.chat_template_kwargs.enable_thinking), [true, false]);
+  assert.equal(bodies.at(-1).max_tokens, 8192);
+});
+
+test('a built-in step cap applies, with the index of a repeated step left off', async () => {
+  const impact = await askOver(() => 'stop', { phase: 'phase4', step: 'impact' });
+  await impact.run();
+  const rules = await askOver(() => 'stop', { phase: 'phase1', step: 'rules-3' });
+  await rules.run();
+  const again = await askOver(() => 'stop', { phase: 'phase9', step: 'revalidation-again' });
+  await again.run();
+  const unlisted = await askOver(() => 'stop', { phase: 'phase4', step: 'risk-1' });
+  await unlisted.run();
+  assert.deepEqual([impact, rules, again, unlisted].map((over) => over.bodies[0].max_tokens),
+    [8192, 20480, 12288, 40960]);
+});
+
+test('a step cap from the config beats a phase cap, a phase cap only lowers the built-in step cap, and reasoningOutput caps all', async () => {
+  const step = { reasoningOutputByStep: { 'phase4.impact': 2048 }, reasoningOutputByPhase: { phase4: 16384 } };
+  const byStep = await askOver(() => 'stop', { model: step, phase: 'phase4', step: 'impact' });
+  await byStep.run();
+  const phaseOnly = await askOver(() => 'stop',
+    { model: { reasoningOutputByPhase: { phase4: 16384 } }, phase: 'phase4', step: 'impact' });
+  await phaseOnly.run();
+  const lowered = await askOver(() => 'stop',
+    { model: { reasoningOutput: 4096 }, phase: 'phase4', step: 'impact' });
+  await lowered.run();
+  assert.deepEqual([byStep, phaseOnly, lowered].map((over) => over.bodies[0].max_tokens),
+    [2048, 8192, 4096]);
+  const lower = await askOver(() => 'stop',
+    { model: { reasoningOutputByPhase: { phase4: 4096 } }, phase: 'phase4', step: 'impact' });
+  await lower.run();
+  assert.equal(lower.bodies[0].max_tokens, 4096);
+  const stepOverPhase = await askOver(() => 'stop', { model: { reasoningOutput: 3000,
+    reasoningOutputByStep: { 'phase4.impact': 2048 } }, phase: 'phase4', step: 'impact' });
+  await stepOverPhase.run();
+  assert.equal(stepOverPhase.bodies[0].max_tokens, 2048);
+  const plain = await askOver(() => 'stop', { phase: 'phase4', step: 'impact', reasoning: false });
+  await plain.run();
+  assert.equal(plain.bodies[0].max_tokens, 16384);
+});
+
+test('a thinking call cut off at its step cap retries with thinking off at the retry cap', async () => {
+  const { run, bodies } = await askOver((body) => (body.max_tokens === 8192 && body.chat_template_kwargs
+    .enable_thinking ? 'length' : 'stop'), { phase: 'phase4', step: 'impact',
+    model: { retryOutput: 4096 } });
+  await run();
+  assert.deepEqual(bodies.map((body) => body.max_tokens), [8192, 4096]);
+  assert.equal(bodies[1].chat_template_kwargs.enable_thinking, false);
+});
+
+test('config refuses a bad reasoningOutputByStep', () => {
+  const bad = (model) => () => fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    ...model } });
+  assert.doesNotThrow(bad({ reasoningOutputByStep: { 'phase4.impact': 4096 } }));
+  assert.throws(bad({ reasoningOutputByStep: { 'phase4.risk': 4096 } }), /not a reasoning step/);
+  assert.throws(bad({ reasoningOutputByStep: { 'phase4.impact': 50000 } }), /1024 to model.reasoningOutput/);
+  assert.throws(bad({ reasoningOutputByStep: { 'phase4.impact': 0 } }), /1024 to model.reasoningOutput/);
+  assert.throws(bad({ reasoningOutputByStep: [4096] }), /must be an object/);
+});
+
+test('config refuses a bad reasoningOutputByPhase or retryOutput', () => {
+  const bad = (model) => () => fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    ...model } });
+  assert.doesNotThrow(bad({ reasoningOutputByPhase: { phase9: 16384 }, retryOutput: 4096 }));
+  assert.throws(bad({ reasoningOutputByPhase: { phase2: 4096 } }), /not a reasoning phase/);
+  assert.throws(bad({ reasoningOutputByPhase: { phase9: 50000 } }), /1024 to model.reasoningOutput/);
+  assert.throws(bad({ reasoningOutputByPhase: { phase9: 0 } }), /1024 to model.reasoningOutput/);
+  assert.throws(bad({ reasoningOutputByPhase: [16384] }), /must be an object/);
+  assert.throws(bad({ retryOutput: 20000 }), /retryOutput/);
 });
 
 test('splitting keeps every character and stays under the limit', () => {
@@ -926,10 +1421,165 @@ test('job status shows the row and the last status line, and nothing else', asyn
     `${JSON.stringify({ at: '2026-10-28T10:01:00.000Z', job: 'issue-9415', phase: 'phase2', event: 'start' })}\n`);
   // A line cut off mid-write is skipped.
   fs.appendFileSync(logPath, '{"at":"2026-10-28T10:02:0');
-  assert.deepEqual(jobStatus(config, 'issue-9415'),
-    ['issue-9415  running  queue free', 'job=issue-9415 phase=phase2 event=start']);
+  const clock = () => new Date('2026-10-28T10:01:30.000Z');
+  assert.deepEqual(jobStatus(config, 'issue-9415', { clock }),
+    ['issue-9415  running  queue free', 'job=issue-9415 phase=phase2 event=start',
+      'interrupted phase=phase2 elapsed=30s']);
   fs.appendFileSync(logPath, `\n${JSON.stringify({ at: '2026-10-28T10:03:00.000Z', reason: 'Patron "renewal" text' })}\n`);
-  assert.throws(() => jobStatus(config, 'issue-9415'), /short code/);
+  assert.throws(() => jobStatus(config, 'issue-9415', { clock }), /short code/);
+});
+
+const logLine = (at, fields) => JSON.stringify({ at, job: 'issue-9415', ...fields });
+function seedJob(config, row, lines) {
+  addJob(config, { issue: '9415' });
+  const queue = readQueue(config);
+  Object.assign(queue.jobs[0], row);
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify(queue));
+  const dir = path.join(config.output, 'issue-9415');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'status.log'), `${lines.join('\n')}\n`);
+}
+
+test('job status shows the running phase, finished phase times and the length cuts', () => {
+  const config = fixtureConfig();
+  seedJob(config, { status: 'running', added: '2026-11-01T08:00:00.000Z', started: '2026-11-01T08:00:00.000Z' }, [
+    logLine('2026-11-01T08:00:01.000Z', { phase: 'phase8', event: 'start' }),
+    logLine('2026-11-01T08:10:00.000Z', { phase: 'phase8', event: 'pass', ms: 599000, failed: 0 }),
+    logLine('2026-11-01T08:10:01.000Z', { phase: 'phase9', event: 'start' }),
+    logLine('2026-11-01T10:10:00.000Z', { phase: 'phase9', step: 'checklist', event: 'retry', attempt: 1,
+      reason: 'length', ms: 7200000 }),
+    logLine('2026-11-01T12:10:00.000Z', { phase: 'phase9', step: 'checklist', event: 'retry', attempt: 1,
+      reason: 'length', ms: 7200000 }),
+    logLine('2026-11-01T12:10:01.000Z', { phase: 'phase9', step: 'review-2', event: 'call-fail', attempt: 2,
+      reason: 'timeout', ms: 5 }),
+  ]);
+  const clock = () => new Date('2026-11-01T13:55:01.000Z');
+  // With no process holding the queue, the open phase is not progress.
+  assert.equal(jobStatus(config, 'issue-9415', { clock })[2], 'interrupted phase=phase9 elapsed=20700s');
+  fs.writeFileSync(`${config.at(config.queue.file)}.lock`, `${process.pid}`);
+  assert.deepEqual(jobStatus(config, 'issue-9415', { clock }), [
+    'issue-9415  running  queue held',
+    'job=issue-9415 phase=phase9 step=review-2 event=call-fail attempt=2 reason=timeout ms=5',
+    'current phase=phase9 elapsed=20700s',
+    'done phase=phase8 ms=599000',
+    'retries reason=length count=2',
+    'call-fails reason=timeout count=1',
+    'cut event=retry phase=phase9 step=checklist reason=length count=2',
+  ]);
+});
+
+test('job status on a stopped job counts earlier attempts and names where it stopped', () => {
+  const config = fixtureConfig();
+  seedJob(config, { status: 'queued', resume: true, added: '2026-11-01T08:00:00.000Z',
+    failures: [{ at: '2026-11-01T09:00:00.000Z', phase: 'phase9', reason: 'model:length', ms: 1 },
+      { at: '2026-11-01T11:00:00.000Z', phase: 'phase9', reason: 'model:runaway', ms: 1 }] }, [
+    logLine('2026-11-01T08:00:01.000Z', { phase: 'phase8', event: 'pass', ms: 1000 }),
+    logLine('2026-11-01T08:30:00.000Z', { phase: 'phase9', step: 'checklist', event: 'call-fail',
+      attempt: 2, reason: 'length', ms: 1 }),
+    logLine('2026-11-01T10:30:00.000Z', { phase: 'phase9', step: 'checklist', event: 'call-fail',
+      attempt: 2, reason: 'runaway', ms: 1 }),
+  ]);
+  assert.deepEqual(jobStatus(config, 'issue-9415'), [
+    'issue-9415  queued  queue free',
+    'stopped phase=phase9 reason=model:runaway',
+    'done phase=phase8 ms=1000',
+    'call-fails reason=length count=1',
+    'call-fails reason=runaway count=1',
+    'cut event=call-fail phase=phase9 step=checklist reason=length count=1',
+    'cut event=call-fail phase=phase9 step=checklist reason=runaway count=1',
+  ]);
+});
+
+test('job status on a failed row names its stop and keeps phases finished before a re-add', () => {
+  const config = fixtureConfig();
+  seedJob(config, { status: 'failed', phase: 'phase9', reason: 'model:length',
+    added: '2026-11-02T08:00:00.000Z', finished: '2026-11-02T09:00:00.000Z' }, [
+    logLine('2026-11-01T08:00:01.000Z', { phase: 'phase8', event: 'pass', ms: 1000 }),
+  ]);
+  assert.deepEqual(jobStatus(config, 'issue-9415'), [
+    'issue-9415  failed  queue free', 'stopped phase=phase9 reason=model:length', 'done phase=phase8 ms=1000']);
+});
+
+test('job status on a queued row added without a resume shows nothing from the old log', () => {
+  const config = fixtureConfig();
+  seedJob(config, { status: 'queued' }, [
+    logLine('2026-11-01T08:00:01.000Z', { phase: 'phase8', event: 'pass', ms: 1000 })]);
+  assert.deepEqual(jobStatus(config, 'issue-9415'), ['issue-9415  queued  queue free']);
+});
+
+test('queue status without a job lists every row with its phase, reason and last update', () => {
+  const config = fixtureConfig();
+  assert.deepEqual(queueLines(readQueue(config)), ['queue empty']);
+  addJob(config, { issue: '9415' });
+  addJob(config, { issue: '9416' });
+  addJob(config, { issue: '9417' });
+  addJob(config, { issue: '9418' });
+  addJob(config, { issue: '9419' });
+  const queue = readQueue(config);
+  Object.assign(queue.jobs[3], { status: 'passed', phase: 'done', reason: null,
+    finished: '2026-11-01T13:00:00.000Z',
+    failures: [{ at: '2026-11-01T09:00:00.000Z', phase: 'phase9', reason: 'model:length', ms: 1 }] });
+  Object.assign(queue.jobs[4], { status: 'running', started: '2026-11-01T14:00:00.000Z',
+    failures: [{ at: '2026-11-01T09:00:00.000Z', phase: 'phase9', reason: 'model:runaway', ms: 1 }] });
+  fs.mkdirSync(path.join(config.output, 'issue-9419'), { recursive: true });
+  fs.writeFileSync(path.join(config.output, 'issue-9419', 'status.log'),
+    `${JSON.stringify({ at: '2026-11-01T14:05:00.000Z', job: 'issue-9419', phase: 'phase3', event: 'start' })}\n`);
+  Object.assign(queue.jobs[0], { status: 'failed', phase: 'phase9', reason: 'model:length',
+    finished: '2026-11-01T11:00:00.000Z' });
+  Object.assign(queue.jobs[1], { status: 'queued', resume: true,
+    failures: [{ at: '2026-11-01T09:00:00.000Z', phase: 'phase5', reason: 'interrupted', ms: 1 }] });
+  Object.assign(queue.jobs[2], { status: 'removed', finished: '2026-11-01T12:00:00.000Z' });
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify(queue));
+  assert.deepEqual(queueLines(readQueue(config), config), [
+    'issue-9415  status=failed phase=phase9 reason=model:length updated=2026-11-01T11:00:00.000Z',
+    'issue-9416  status=queued phase=phase5 reason=interrupted updated=2026-11-01T09:00:00.000Z',
+    'issue-9417  status=removed phase=- reason=- updated=2026-11-01T12:00:00.000Z',
+    'issue-9418  status=passed phase=done reason=- updated=2026-11-01T13:00:00.000Z',
+    'issue-9419  status=running phase=phase3 reason=- updated=2026-11-01T14:05:00.000Z',
+  ]);
+});
+
+test('the status of a job a queue run finished shows the release line', async () => {
+  const config = releaseConfig();
+  const { id } = addJob(config, { issue: '9415' });
+  await drainQueue(config, { run: okRun, release: fakeRelease([], { status: 1 }).make });
+  assert.deepEqual(jobStatus(config, id), [`${id}  passed  queue free`,
+    `job=${id} phase=release event=fail reason=exit-1 ms=${releaseLines(config, id)[0].ms}`]);
+});
+
+test('the release line follows the job\'s own last line while the row still runs', () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '9415' });
+  const queue = readQueue(config);
+  Object.assign(queue.jobs[0], { status: 'running', started: '2026-10-28T10:00:00.000Z' });
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify(queue));
+  const dir = path.join(config.output, 'issue-9415');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'status.log'), [
+    { at: '2026-10-28T10:05:00.000Z', job: 'issue-9415', phase: 'phase5', event: 'start' },
+    { at: '2026-10-28T10:06:00.000Z', job: 'issue-9415', phase: 'release', event: 'pass', ms: 900 },
+  ].map((line) => `${JSON.stringify(line)}\n`).join(''));
+  const clock = () => new Date('2026-10-28T10:10:00.000Z');
+  assert.deepEqual(jobStatus(config, 'issue-9415', { clock }), ['issue-9415  running  queue free',
+    'job=issue-9415 phase=phase5 event=start', 'job=issue-9415 phase=release event=pass ms=900',
+    'interrupted phase=phase5 elapsed=300s']);
+});
+
+test('a release failure line does not replace the failed job\'s sheet count in the report', () => {
+  const config = fixtureConfig();
+  const dir = path.join(config.output, 'issue-300');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'status.log'), [
+    { at: '2026-10-28T10:05:00.000Z', job: 'issue-300', phase: 'phase8', event: 'fail', sheets: 3 },
+    { at: '2026-10-28T10:06:00.000Z', job: 'issue-300', phase: 'release', event: 'fail', ms: 9 },
+  ].map((line) => `${JSON.stringify(line)}\n`).join(''));
+  const row = { id: 'issue-300', status: 'failed', phase: 'phase8', reason: 'gate:x', ms: 1,
+    finished: '2026-10-28T10:05:30.000Z', failures: [
+      { at: '2026-10-28T09:00:00.000Z', phase: 'phase8', reason: 'gate:x', ms: 1 },
+      { at: '2026-10-28T10:05:30.000Z', phase: 'phase8', reason: 'gate:x', ms: 1 }] };
+  const data = reportData(config, { jobs: [row] }, { period: 'day',
+    now: new Date('2026-10-28T12:00:00.000Z'), random: seededRandom(1) });
+  assert.equal(data.jobs[0].sheets.fail, 3);
 });
 
 test('the client refuses redirects, so a prompt cannot be handed to another host', async () => {
@@ -1111,6 +1761,99 @@ test('an export outage in Phase 2 keeps the rules intake read and warns', async 
   assert.ok(ids.includes('BR-LIB.UC01-001') && ids.includes('BR-LIB.UC09-001'));
 });
 
+test('a document path outside the root gets the path code and no export runs', () => {
+  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'exports-')), 'log');
+  const config = fixtureConfig();
+  config.inputs = { ...config.inputs, ruleExport: ['node', '-e',
+    `require("fs").appendFileSync(${JSON.stringify(log)}, process.argv[1]);`, '{doc}'] };
+  const ctx = { config, job: { id: 'j' }, logs: { status() {}, detail() {} } };
+  assert.deepEqual(documentRules(ctx, path.join(FIXTURES, '..', 'phases.mjs')),
+    { code: 'document-file', rules: [] });
+  assert.deepEqual(documentRules(ctx, path.join(FIXTURES, 'docs')), { code: 'document-file', rules: [] });
+  assert.deepEqual(documentRules(ctx, path.join(FIXTURES, 'docs', 'missing.md')),
+    { code: 'document-file', rules: [] });
+  assert.ok(!fs.existsSync(log), 'the export ran');
+});
+
+test('a noRules answer in Phase 2 keeps rules intake read as usable and warns', async () => {
+  const config = fixtureConfig();
+  const job = issueJob(['docs/LIB/UC01-Card-Renewal.md', 'docs/OTHER/UC09-Unmapped.md']);
+  const first = await runJob(config, job, { model: fakeModel(), echo: false });
+  assert.equal(first.reason, 'gate:rules-not-extracted');
+  config.inputs = { ...config.inputs, ruleExport: ['node', '-e',
+    'const d = process.argv[1]; if (d.includes("UC01")) { process.stderr.write(d + " is not in br_doc_map");'
+    + ' process.exit(1); }'
+    + ' const r = require("child_process").spawnSync("node", ["export.mjs", "--doc", d,'
+    + ' "--master", "exports/fixed.json"], { stdio: "inherit" }); process.exit(r.status);', '{doc}'] };
+  const again = await runJob(config, { ...job, resume: true }, { model: fakeModel(), echo: false });
+  assert.equal(again.ok, true, JSON.stringify(again));
+  const lines = statusLines(again.outDir);
+  assert.ok(lines.some((l) => l.event === 'warn' && l.reason === 'rules-not-extracted' && l.document === 1));
+  assert.ok(!lines.some((l) => l.event === 'stop-doc' && l.document === 1));
+  const ids = JSON.parse(read(again.packPath)).rules.map((rule) => rule.id);
+  assert.ok(ids.includes('BR-LIB.UC01-001') && ids.includes('BR-LIB.UC09-001'));
+});
+
+const noRulesForUc01 = ['node', '-e',
+  'const d = process.argv[1]; if (d.includes("UC01")) { process.stderr.write(d + " is not in br_doc_map");'
+  + ' process.exit(1); }'
+  + ' const r = require("child_process").spawnSync("node", ["export.mjs", "--doc", d,'
+  + ' "--master", "exports/fixed.json"], { stdio: "inherit" }); process.exit(r.status);', '{doc}'];
+
+test('a noRules answer keeps the extracted rules when the job allows derived rules', async () => {
+  const config = fixtureConfig();
+  const job = issueJob(['docs/LIB/UC01-Card-Renewal.md', 'docs/OTHER/UC09-Unmapped.md']);
+  const first = await runJob(config, job, { model: fakeModel(), echo: false });
+  assert.equal(first.reason, 'gate:rules-not-extracted');
+  config.inputs = { ...config.inputs, ruleExport: noRulesForUc01 };
+  const model = fakeModel();
+  const again = await runJob(config, { ...job, allowDerivedRules: true, resume: true },
+    { model, echo: false });
+  assert.equal(again.ok, true, JSON.stringify(again));
+  assert.ok(statusLines(again.outDir).some((l) => l.event === 'warn' && l.reason === 'rules-not-extracted'
+    && l.document === 1));
+  assert.ok(!model.calls.some((call) => /derive/.test(call.schemaName)));
+  const ids = JSON.parse(read(again.packPath)).rules.map((rule) => rule.id);
+  assert.ok(ids.includes('BR-LIB.UC01-001'));
+});
+
+test('a held document whose checkpoint path now falls outside the root keeps its rules and warns', async () => {
+  const config = fixtureConfig();
+  const job = issueJob(['docs/LIB/UC01-Card-Renewal.md', 'docs/OTHER/UC09-Unmapped.md']);
+  const first = await runJob(config, job, { model: fakeModel(), echo: false });
+  assert.equal(first.reason, 'gate:rules-not-extracted');
+  const file = path.join(first.outDir, 'work', 'checkpoint.json');
+  const saved = JSON.parse(read(file));
+  saved.state.documents[0].file = path.join(FIXTURES, '..', '..', 'SKILL.md');
+  fs.writeFileSync(file, JSON.stringify(saved));
+  config.inputs = { ...config.inputs, ruleExport: noRulesForUc01 };
+  const again = await runJob(config, { ...job, resume: true }, { model: fakeModel(), echo: false });
+  assert.equal(again.ok, true, JSON.stringify(again));
+  assert.ok(statusLines(again.outDir).some((l) => l.event === 'warn' && l.reason === 'document-file'
+    && l.document === 1));
+  const ids = JSON.parse(read(again.packPath)).rules.map((rule) => rule.id);
+  assert.ok(ids.includes('BR-LIB.UC01-001'));
+});
+
+test('a document intake read as rules-not-extracted still stops Phase 2, and a bad checkpoint path does not pass for it', async () => {
+  const config = fixtureConfig();
+  const job = issueJob(['docs/OTHER/UC09-Unmapped.md']);
+  const first = await runJob(config, job, { model: fakeModel(), echo: false });
+  assert.equal(first.reason, 'gate:rules-not-extracted');
+  const lines = statusLines(first.outDir);
+  assert.ok(lines.some((l) => l.event === 'stop-doc' && l.document === 1 && l.reason === 'rules-not-extracted'));
+  assert.ok(!lines.some((l) => l.event === 'warn' && l.reason === 'rules-not-extracted'));
+  const resumed = await runJob(config, { ...job, resume: true }, { model: fakeModel(), echo: false });
+  assert.equal(resumed.reason, 'gate:rules-not-extracted');
+
+  const file = path.join(first.outDir, 'work', 'checkpoint.json');
+  const saved = JSON.parse(read(file));
+  for (const doc of saved.state.documents) doc.file = path.join(FIXTURES, '..', '..', 'SKILL.md');
+  fs.writeFileSync(file, JSON.stringify(saved));
+  const outside = await runJob(config, { ...job, resume: true }, { model: fakeModel(), echo: false });
+  assert.equal(outside.reason, 'gate:document-file');
+});
+
 test('a checkpoint written without document paths resumes without re-reading the export', async () => {
   const config = fixtureConfig();
   const job = issueJob(['docs/OTHER/UC09-Unmapped.md']);
@@ -1126,6 +1869,178 @@ test('a checkpoint written without document paths resumes without re-reading the
   const resumed = await runJob(config, { ...job, resume: true }, { model, echo: false });
   assert.equal(resumed.ok, true, JSON.stringify(resumed));
   assert.ok(model.calls.some((call) => /derive/.test(call.schemaName)));
+});
+
+/** Two roots with the fixtures' files, a config over each, and one output folder both write. */
+function twoRoots() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'roots-'));
+  const roots = ['a', 'b'].map((name) => {
+    const root = path.join(base, name);
+    fs.cpSync(FIXTURES, root, { recursive: true });
+    return root;
+  });
+  const output = path.join(base, 'out');
+  const [a, b] = roots.map((repoRoot) => fixtureConfig({ repoRoot, output }));
+  return { base, a, b };
+}
+
+/** A rule export that reads the master the fixtures' fixed export uses and logs each document. */
+const fixedExport = (log) => ['node', '-e',
+  'const fs = require("fs"); const d = process.argv[2]; fs.appendFileSync(process.argv[1], d + "\\n");'
+  + ' const r = require("child_process").spawnSync("node", ["export.mjs", "--doc", d,'
+  + ' "--master", "exports/fixed.json"], { stdio: "inherit" }); process.exit(r.status);', log, '{doc}'];
+
+test('a job checkpointed under one root resumes under another and exports the path relative to it', async () => {
+  const { a, b } = twoRoots();
+  const job = issueJob(['docs/OTHER/UC09-Unmapped.md']);
+  const first = await runJob(a, job, { model: fakeModel(), echo: false });
+  assert.equal(first.phase, 'phase2');
+  const saved = JSON.parse(read(path.join(first.outDir, 'work', 'checkpoint.json')));
+  assert.deepEqual(saved.state.documents.map((doc) => doc.file), ['docs/OTHER/UC09-Unmapped.md']);
+  assert.deepEqual(saved.state.documentPaths, ['docs/OTHER/UC09-Unmapped.md']);
+  fs.rmSync(a.root, { recursive: true });
+  const log = path.join(path.dirname(b.root), 'exports.log');
+  b.inputs = { ...b.inputs, ruleExport: fixedExport(log) };
+  const resumed = await runJob(b, { ...job, resume: true }, { model: fakeModel(), echo: false });
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  assert.deepEqual(read(log).trim().split('\n'), ['docs/OTHER/UC09-Unmapped.md']);
+});
+
+test('a checkpoint holding an absolute worktree path resumes under the current root', async () => {
+  const { a, b } = twoRoots();
+  const job = issueJob(['docs/OTHER/UC09-Unmapped.md']);
+  const first = await runJob(a, job, { model: fakeModel(), echo: false });
+  assert.equal(first.phase, 'phase2');
+  const file = path.join(first.outDir, 'work', 'checkpoint.json');
+  const saved = JSON.parse(read(file));
+  const stale = '/gone/Code/Repo/.claude/worktrees/old-branch/docs/OTHER/UC09-Unmapped.md';
+  for (const doc of saved.state.documents) doc.file = stale;
+  saved.state.documentPaths = [stale];
+  fs.writeFileSync(file, JSON.stringify(saved));
+  const log = path.join(path.dirname(b.root), 'exports.log');
+  b.inputs = { ...b.inputs, ruleExport: fixedExport(log) };
+  const resumed = await runJob(b, { ...job, resume: true }, { model: fakeModel(), echo: false });
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  assert.deepEqual(read(log).trim().split('\n'), ['docs/OTHER/UC09-Unmapped.md']);
+});
+
+test('rootRelative keeps a document path relative to the root whatever it was given as', () => {
+  const config = { root: '/repo' };
+  assert.equal(rootRelative(config, 'docs/a/B.md'), 'docs/a/B.md');
+  assert.equal(rootRelative(config, '/repo/docs/a/B.md'), 'docs/a/B.md');
+  assert.equal(rootRelative(config, '/repo/.claude/worktrees/w1/docs/a/B.md'), 'docs/a/B.md');
+  assert.equal(rootRelative(config, '/elsewhere/.claude/worktrees/w1/docs/a/B.md'), 'docs/a/B.md');
+  assert.equal(rootRelative(config, '/elsewhere/docs/a/B.md'), 'docs/a/B.md');
+  assert.equal(rootRelative(config, '/elsewhere/notes.md'), '/elsewhere/notes.md');
+  // A path from a worktree whose top folder is above the root is cut to what exists under the root.
+  const sub = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-'));
+  fs.mkdirSync(path.join(sub, 'docs'));
+  fs.writeFileSync(path.join(sub, 'docs', 'B.md'), '');
+  assert.equal(rootRelative({ root: sub }, '/top/.claude/worktrees/w/specs/docs/B.md'), 'docs/B.md');
+  assert.equal(rootRelative(config, '/repo/.claude/worktrees/w1'), '.claude/worktrees/w1');
+  assert.equal(rootRelative(config, '/repo'), '.');
+  // A bare file name never matches an unrelated file, and a relative worktree path is cut too.
+  fs.writeFileSync(path.join(sub, 'README.md'), '');
+  assert.equal(rootRelative({ root: sub }, `${sub}/.claude/worktrees/w/docs/new/README.md`), 'docs/new/README.md');
+  assert.equal(rootRelative({ root: sub }, '.claude/worktrees/w/docs/B.md'), 'docs/B.md');
+  // A root that is itself in a worktree still reads its own files as relative.
+  assert.equal(rootRelative({ root: '/r/.claude/worktrees/w2/pkg' }, '/r/.claude/worktrees/w2/pkg/docs/B.md'),
+    'docs/B.md');
+});
+
+/** A git repository holding the fixtures and a pipeline config at its top, and a worktree of it. */
+function repoWithWorktree() {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wt-')));
+  const main = path.join(base, 'main');
+  fs.cpSync(FIXTURES, main, { recursive: true });
+  const raw = JSON.parse(read(path.join(FIXTURES, 'pipeline.json')));
+  Object.assign(raw, { repoRoot: '.', output: path.join(base, 'out'), memory: { enabled: false },
+    queue: { file: path.join(base, 'queue.json') }, release: { command: [] } });
+  fs.writeFileSync(path.join(main, 'pipeline.json'), JSON.stringify(raw));
+  const git = (...args) => {
+    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: main, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  git('init', '-q', '-b', 'main');
+  git('add', '.');
+  git('commit', '-q', '-m', 'fixtures');
+  const worktree = path.join(base, 'wt');
+  git('worktree', 'add', '-q', worktree);
+  return { base, main, worktree, queue: path.join(base, 'queue.json') };
+}
+
+test('queue add run from a worktree refuses, names the main checkout, and queues nothing', () => {
+  const { main, worktree, queue } = repoWithWorktree();
+  const env = { ...process.env };
+  delete env.BUILD_PACK_ALLOW_WORKTREE;
+  const add = (cwd, config) => spawnSync(process.execPath, [path.join(HERE, 'build-pack.mjs'), 'queue', 'add',
+    '--config', path.join(config, 'pipeline.json'), '--issue', '100'], { cwd, env, encoding: 'utf8' });
+  const refused = add(worktree, worktree);
+  assert.equal(refused.status, 2, refused.stderr);
+  assert.ok(refused.stderr.includes(main), refused.stderr);
+  assert.ok(refused.stderr.includes(path.join(main, 'pipeline.json')), refused.stderr);
+  assert.equal(fs.existsSync(queue), false);
+  const ok = add(worktree, main);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /queued issue-100/);
+  assert.equal(mainCheckout(main), null);
+  assert.equal(mainCheckout(worktree).main, main);
+});
+
+test('rootRelative cuts a worktree path by the root folder in its repository, not by guessing a tail', () => {
+  const { main } = repoWithWorktree();
+  fs.mkdirSync(path.join(main, 'new'), { recursive: true });
+  fs.writeFileSync(path.join(main, 'new', 'README.md'), '');
+  assert.equal(rootRelative({ root: main }, `${main}/.claude/worktrees/w/docs/new/README.md`), 'docs/new/README.md');
+  fs.mkdirSync(path.join(main, 'specs'));
+  assert.equal(rootRelative({ root: path.join(main, 'specs') }, `${main}/.claude/worktrees/w/specs/spec/new.md`),
+    'spec/new.md');
+  assert.equal(rootRelative({ root: main }, '../shared/docs/a.md'), '../shared/docs/a.md');
+  // A worktree of another clone is cut by what exists, and a relative path into a worktree is cut too.
+  assert.equal(rootRelative({ root: main }, '/old/Other/.claude/worktrees/w/specs/docs/B.md'), 'docs/B.md');
+  fs.mkdirSync(path.join(main, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(main, 'docs', 'B.md'), '');
+  assert.equal(rootRelative({ root: main }, '/old/Other/.claude/worktrees/w/specs/docs/B.md'), 'docs/B.md');
+  assert.equal(rootRelative({ root: path.join(main, 'specs') }, '../.claude/worktrees/w/specs/docs/C.md'), 'docs/C.md');
+  // Where the root itself sits never counts as a worktree marker.
+  const nested = { root: path.join(main, '.claude', 'worktrees', 'w1', 'proj') };
+  assert.equal(rootRelative(nested, '.'), '.');
+  assert.equal(rootRelative(nested, path.join(nested.root, 'notes', 'x.md')), 'notes/x.md');
+  assert.equal(rootRelative(nested, '../shared/docs/a.md'), '../shared/docs/a.md');
+  assert.equal(rootRelative({ root: main }, path.join(main, 'my.claude', 'worktrees', 'z', 'docs', 'q.md')),
+    'my.claude/worktrees/z/docs/q.md');
+  // An inherited GIT_DIR does not change where the root sits in its repository.
+  const was = process.env.GIT_DIR;
+  process.env.GIT_DIR = path.join(main, '.git');
+  try {
+    assert.equal(rootRelative({ root: path.join(main, 'specs') }, `${main}/.claude/worktrees/w/specs/spec/new.md`),
+      'spec/new.md');
+  } finally {
+    if (was === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = was;
+  }
+});
+
+test('queue add stores each document relative to the root', () => {
+  const config = fixtureConfig();
+  const abs = path.join(config.root, 'docs/LIB/UC01-Card-Renewal.md');
+  const add = spawnSync(process.execPath, [path.join(HERE, 'build-pack.mjs'), 'queue', 'add',
+    '--config', config.file, '--issue', '100', '--doc', abs, '--doc', 'docs/LIB/UC02-Overdue-Fines.md'],
+  { encoding: 'utf8' });
+  assert.equal(add.status, 0, add.stderr);
+  assert.deepEqual(JSON.parse(read(config.at(config.queue.file))).jobs[0].docs,
+    ['docs/LIB/UC01-Card-Renewal.md', 'docs/LIB/UC02-Overdue-Fines.md']);
+});
+
+test('a folder outside a repository is not a worktree', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plain-'));
+  assert.equal(mainCheckout(dir), null);
+  const was = process.env.BUILD_PACK_ALLOW_WORKTREE;
+  delete process.env.BUILD_PACK_ALLOW_WORKTREE;
+  try {
+    assert.equal(worktreeRefusal({ root: dir, file: path.join(dir, 'pipeline.json') }), null);
+  } finally {
+    process.env.BUILD_PACK_ALLOW_WORKTREE = was;
+  }
 });
 
 test('a structurally malformed export stops intake, and only detail.log says why', async () => {
@@ -1317,7 +2232,7 @@ test('a retired Direct Change rule no scenario names gets a scenario and a card 
   const run = struckRun();
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
-  const asked = callsNamed(run, 'phase6_cards_d1_removed');
+  const asked = callsNamed(run, 'phase6_cards_d1_rule');
   assert.equal(asked.length, 1);
   assert.match(asked[0].user, /check that the behavior of BR-LIB\.UC05-003 is gone/);
   assert.match(asked[0].user, /verifies the behavior is gone/);
@@ -1329,23 +2244,25 @@ test('a retired Direct Change rule no scenario names gets a scenario and a card 
 
 test('a retired Direct Change rule a card already cites needs no further call', async () => {
   const run = struckRun({ phase6_scenarios: (value) => ({ ...value, scenarios: [
-    { kind: 'decision', rules: [RETIRED], population: 'p0', action: 'a0', outcome: 'o' }] }) });
+    { kind: 'decision', rules: ['BR-LIB.UC05-001', 'BR-LIB.UC05-002', RETIRED], population: 'p0',
+      action: 'a0', outcome: 'o' }] }) });
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(callsNamed(run, 'phase6_cards_d1_removed').length, 0);
+  assert.equal(callsNamed(run, 'phase6_cards_d1_rule').length, 0);
 });
 
 test('a scenario the inventory made for a retired rule, however it settled, adds no further scenario', async () => {
   const run = struckRun({
     phase6_scenarios: (value) => ({ ...value, scenarios: [
-      { kind: 'decision', rules: ['BR-LIB.UC05-001'], population: 'p0', action: 'a0', outcome: 'o' },
+      { kind: 'decision', rules: ['BR-LIB.UC05-001', 'BR-LIB.UC05-002'], population: 'p0', action: 'a0',
+        outcome: 'o' },
       { kind: 'decision', rules: [RETIRED], population: 'p1', action: 'a1', outcome: 'o' }] }),
     phase6_cards: (value) => titled({ ...value, cards: value.cards.filter((c) => c.scenario === 'S1'),
       skipped: [{ scenario: 'S2', how: 'reused', reason: 'An existing test covers it.' }] }),
   });
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(callsNamed(run, 'phase6_cards_d1_removed').length, 0);
+  assert.equal(callsNamed(run, 'phase6_cards_d1_rule').length, 0);
   assert.equal(phase6Pass(result.outDir).unsettled, 0);
 });
 
@@ -1359,7 +2276,7 @@ test('a scenario for a retired rule that a card settled without citing it still 
   });
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(callsNamed(run, 'phase6_cards_d1_removed').length, 1);
+  assert.equal(callsNamed(run, 'phase6_cards_d1_rule').length, 1);
 });
 
 test('verification reads a retired rule as removed, so a card stating the behavior is absent survives', async () => {
@@ -1396,11 +2313,75 @@ test('a retired rule no card can cover is asked for twice, then recorded as a ga
     cards: value.cards.filter((card) => card.scenario !== 'S3') }) });
   const result = await runLib(run);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(callsNamed(run, 'phase6_cards_d1_removed').length, 2);
+  assert.equal(callsNamed(run, 'phase6_cards_d1_rule').length, 2);
   const pack = JSON.parse(read(result.packPath));
   assert.ok(pack.coverage.some((row) => row.ruleId === RETIRED && row.status === 'Missing'));
   assert.match(pack.limitations['Coverage Matrix'], /BR-LIB\.UC05-003/);
   assert.ok(pack.assumptions.some((a) => a.assumption.startsWith('No test card covers scenario S3:')));
+});
+
+// An active impacted rule the inventory leaves out is owed a card as much as a retired one.
+const LIVE = 'BR-LIB.UC01-005';
+const leaveOut = (extra = {}, overrides = {}) => lib({
+  phase6_scenarios: (value) => ({ ...value, scenarios: [{ kind: 'decision', population: 'p0', action: 'a0',
+    outcome: 'o', rules: ['BR-LIB.UC01-001', 'BR-LIB.UC01-002', 'BR-LIB.UC01-003', 'BR-LIB.UC01-004'] }] }),
+  phase6_cards: titled,
+  ...extra,
+}, overrides);
+
+test('an active impacted rule no scenario names gets a scenario and a card', async () => {
+  const run = leaveOut();
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const asked = callsNamed(run, 'phase6_cards_d1_rule');
+  assert.equal(asked.length, 1);
+  assert.match(asked[0].user, new RegExp(`check that ${LIVE.replace('.', '\\.')} holds`));
+  assert.doesNotMatch(asked[0].user, /verifies the behavior is gone/);
+  const pack = JSON.parse(read(result.packPath));
+  assert.ok(pack.testCards.some((card) => card.rules.includes(LIVE)));
+  assert.ok(!pack.coverage.some((row) => row.ruleId === LIVE && row.status === 'Missing'));
+});
+
+test('an active rule no card can cover is asked for twice, then recorded as a gap and a limitation', async () => {
+  const run = leaveOut({ phase6_cards: (value) => titled({ ...value,
+    cards: value.cards.filter((card) => !card.rules.includes(LIVE)) }) });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(callsNamed(run, 'phase6_cards_d1_rule').length, 2);
+  const pack = JSON.parse(read(result.packPath));
+  assert.ok(pack.coverage.some((row) => row.ruleId === LIVE && row.status === 'Missing'));
+  assert.match(pack.limitations['Coverage Matrix'], /BR-LIB\.UC01-005/);
+  assert.ok(pack.assumptions.some((a) => a.assumption.startsWith('No test card covers scenario')));
+});
+
+test('an active rule whose own scenario was skipped as a gap is not asked about again', async () => {
+  const run = leaveOut({
+    phase6_scenarios: (value) => ({ ...value, scenarios: [
+      { kind: 'decision', population: 'p0', action: 'a0', outcome: 'o',
+        rules: ['BR-LIB.UC01-001', 'BR-LIB.UC01-002', 'BR-LIB.UC01-003', 'BR-LIB.UC01-004'] },
+      { kind: 'decision', population: 'p1', action: 'a1', outcome: 'o', rules: [LIVE] }] }),
+    phase6_cards: (value) => titled({ ...value, cards: value.cards.filter((c) => c.scenario === 'S1'),
+      skipped: [{ scenario: 'S2', how: 'gap', reason: 'The document does not say.' }] }),
+  });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(callsNamed(run, 'phase6_cards_d1_rule').length, 0);
+});
+
+test('the rules owed a scenario go to the card call in batches of cardScenariosPerCall', async () => {
+  const run = leaveOut({
+    phase6_scenarios: (value) => ({ ...value, scenarios: [{ kind: 'decision', population: 'p0', action: 'a0',
+      outcome: 'o', rules: ['BR-LIB.UC01-001', 'BR-LIB.UC01-002', 'BR-LIB.UC01-003'] }] }),
+    // Each reply writes the card for the first scenario listed in the call only.
+    phase6_cards: (value, calls) => {
+      const first = calls.at(-1).user.match(/- (S\d+) \|/)?.[1];
+      return titled({ ...value, cards: value.cards.filter((card) => card.scenario === first) });
+    } },
+  { cardScenariosPerCall: 1 });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const names = callsNamed(run, 'phase6_cards_d1_rule').map((c) => c.schemaName);
+  assert.deepEqual(names, ['phase6_cards_d1_rule_1', 'phase6_cards_d1_rule_2']);
 });
 
 test('check reports each input by code without a model call, and fails on a missing one', () => {
@@ -1462,14 +2443,16 @@ test('a resumed job starts at the phase that stopped it and keeps what passed', 
       const model = fakeModel(pick);
       const result = await runJob(config, { ...job, resume: true }, { model, echo: false });
       assert.equal(result.ok, true, JSON.stringify(result));
-      // The checklist and the confidence passed before the failure, so only the calls after them run again.
-      assert.deepEqual([...new Set(model.calls.map((c) => c.schemaName))],
-        ['phase9_senior', 'phase9_revalidation', 'phase10_notes']);
+      // Only the checklist passed before the failure, so only the calls after them run again.
+      const stepNames = [...new Set(model.calls.map((c) => c.schemaName))];
+      assert.equal(stepNames[0], 'phase9_senior');
+      assert.deepEqual(stepNames.slice(-2), ['phase9_revalidation', 'phase10_notes']);
+      assert.ok(stepNames.includes('phase9_confidence_overall'));
       const lines = statusLines(result.outDir);
       assert.ok(lines.some((l) => l.event === 'resume' && l.phase === 'phase9-senior'
-        && l.after === 'phase9-confidence'));
+        && l.after === 'phase9-checklist'));
       assert.deepEqual(lines.filter((l) => l.event === 'pass').map((l) => l.phase).slice(-4),
-        ['phase9-senior', 'phase9-revalidate', 'phase10', 'done']);
+        ['phase9-confidence', 'phase9-revalidate', 'phase10', 'done']);
       // The pack carries what the first run's phases built.
       const pack = JSON.parse(read(result.packPath));
       assert.ok(pack.testCards.length > 0);
@@ -1598,6 +2581,92 @@ test('a busy unit is stopped only after its worker exits', async () => {
   assert.equal(sys.verbs().filter((c) => c.includes('start')).length, 2);
 });
 
+test('a busy unit is left running once maxWaitMinutes passes', async () => {
+  const config = pauseConfig({ busyProcess: 'worker', pollSeconds: 5, maxWaitMinutes: 0.25 });
+  const proc = fakeProc([[100, 'worker', '/system.slice/gpu-a.service']]);
+  const sys = fakeSystemctl(['gpu-a.service', 'gpu-b.service']);
+  let t = new Date('2026-10-27T22:00:00').getTime();
+  const sleeps = [];
+  const sleep = async (ms) => { sleeps.push(ms); t += ms; };
+  const lines = [];
+  const pauser = createPauser(config, { exec: sys.exec, log: (l) => lines.push(l), procRoot: proc, sleep,
+    clock: () => new Date(t) });
+  await pauser.pause();
+  assert.deepEqual(sleeps, [5000, 5000, 5000]);
+  assert.ok(lines.includes('pause: left running gpu-a.service'));
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')), ['stop gpu-b.service']);
+  await pauser.resume();
+  assert.deepEqual(sys.verbs().filter((c) => c.includes('start')).map((c) => c.at(-1)), ['gpu-b.service']);
+});
+
+test('maxWaitMinutes 0 stops the idle units and never sleeps', async () => {
+  const config = pauseConfig({ busyProcess: 'worker', maxWaitMinutes: 0 });
+  const proc = fakeProc([[100, 'worker', '/system.slice/gpu-a.service']]);
+  const sys = fakeSystemctl(['gpu-a.service', 'gpu-b.service']);
+  const lines = [];
+  const sleep = async () => assert.fail('slept');
+  const pauser = createPauser(config, { exec: sys.exec, log: (l) => lines.push(l), procRoot: proc, sleep });
+  await pauser.pause();
+  assert.deepEqual(sys.verbs().map((c) => c.at(-1)), ['gpu-b.service']);
+  assert.ok(lines.includes('pause: left running gpu-a.service'));
+});
+
+test('a wait that runs into the cutoff starts no job and starts the units again', async () => {
+  const config = pauseConfig({ busyProcess: 'worker', pollSeconds: 5 });
+  addJob(config, { issue: '1' });
+  const proc = fakeProc([[100, 'worker', '/system.slice/gpu-a.service']]);
+  const sys = fakeSystemctl(['gpu-a.service', 'gpu-b.service']);
+  let t = new Date('2026-10-28T06:59:50').getTime();
+  const clock = () => new Date(t);
+  const sleep = async (ms) => { t += ms; };
+  let ran = 0;
+  const done = await drainQueue(config, { cutoff: '07:00', clock, run: async () => { ran += 1; return { ok: true, ms: 1 }; },
+    pause: quiet(sys, { procRoot: proc, sleep, clock }) });
+  assert.equal(ran, 0);
+  assert.deepEqual(done, []);
+  assert.equal(readQueue(config).jobs[0].status, 'queued');
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')), ['stop gpu-b.service', 'start gpu-b.service']);
+});
+
+test('a unit left busy is stopped before a later job once its worker has finished', async () => {
+  const config = pauseConfig({ busyProcess: 'worker', maxWaitMinutes: 0 });
+  addJob(config, { issue: '1' });
+  addJob(config, { issue: '2' });
+  const proc = fakeProc([[100, 'worker', '/system.slice/gpu-a.service']]);
+  const active = ['gpu-a.service', 'gpu-b.service'];
+  const sys = fakeSystemctl(active);
+  // A stopped unit drops out of the active list, as it does under systemd.
+  const exec = (command, args) => {
+    if (args.includes('stop')) active.splice(active.indexOf(args.at(-1)), 1);
+    return sys.exec(command, args);
+  };
+  const clock = () => new Date('2026-10-27T22:00:00');
+  const seen = [];
+  const run = async () => {
+    seen.push(sys.verbs().map((c) => c.slice(-2).join(' ')));
+    fs.rmSync(path.join(proc, '100'), { recursive: true, force: true });
+    return { ok: true, ms: 1 };
+  };
+  await drainQueue(config, { cutoff: '07:00', clock, run,
+    pause: (cfg) => createPauser(cfg, { exec, log: () => {}, procRoot: proc, clock }) });
+  assert.deepEqual(seen, [['stop gpu-b.service'], ['stop gpu-b.service', 'stop gpu-a.service']]);
+  assert.deepEqual(sys.verbs().filter((c) => c.includes('start')).map((c) => c.at(-1)),
+    ['gpu-b.service', 'gpu-a.service']);
+});
+
+test('a unit that would not stop is tried once, and a unit left busy is reported once', async () => {
+  const config = pauseConfig({ busyProcess: 'worker', maxWaitMinutes: 0 });
+  const proc = fakeProc([[100, 'worker', '/system.slice/gpu-a.service']]);
+  const sys = fakeSystemctl(['gpu-a.service', 'gpu-b.service'], ['stop gpu-b.service']);
+  const lines = [];
+  const pauser = createPauser(config, { exec: sys.exec, log: (l) => lines.push(l), procRoot: proc });
+  await pauser.pause();
+  await pauser.pause();
+  assert.equal(lines.filter((l) => l === 'pause: stop failed gpu-b.service').length, 1);
+  assert.equal(lines.filter((l) => l === 'pause: left running gpu-a.service').length, 1);
+  assert.equal(sys.verbs().filter((c) => c.includes('stop')).length, 1);
+});
+
 test('with no pause config nothing is run', async () => {
   const config = fixtureConfig();
   addJob(config, { issue: '1' });
@@ -1649,18 +2718,301 @@ test('a second resume does nothing, and each stop is recorded as it happens', as
   const sys = fakeSystemctl(['gpu-a.service']);
   const pauser = createPauser(config, { exec: sys.exec, log: () => {} });
   await pauser.pause();
-  assert.deepEqual(JSON.parse(fs.readFileSync(pausedPath(config), 'utf8')), ['gpu-a.service']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(pausedPath(config), 'utf8')), { stopped: ['gpu-a.service'], restore: [] });
   await pauser.resume();
   const calls = sys.calls.length;
   await pauser.resume();
   assert.equal(sys.calls.length, calls);
 });
 
+test('a unit marked to restore is started when the run ends, though it was down at the start', async () => {
+  const config = pauseConfig();
+  addJob(config, { issue: '1' });
+  assert.ok(markRestore(config, 'issue-1', ['gpu-c.service']));
+  const sys = fakeSystemctl(['gpu-a.service']);
+  await drainQueue(config, { run: okRun, pause: quiet(sys) });
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')),
+    ['stop gpu-a.service', 'start gpu-a.service', 'start gpu-c.service']);
+  assert.ok(!fs.existsSync(pausedPath(config)));
+  assert.equal(readQueue(config).jobs[0].restore, undefined);
+});
+
+test('a marked unit is started after a failed job too', async () => {
+  const config = pauseConfig();
+  addJob(config, { issue: '1' });
+  markRestore(config, 'issue-1', ['gpu-c.service']);
+  const sys = fakeSystemctl([]);
+  await drainQueue(config, { run: async () => ({ ok: false, phase: 'intake', ms: 1 }), pause: quiet(sys) });
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')), ['start gpu-c.service']);
+  assert.equal(readQueue(config).jobs[0].restore, undefined);
+});
+
+test('cancel starts a unit marked on the running job', async () => {
+  const config = pauseConfig();
+  addJob(config, { issue: '501' });
+  const queue = readQueue(config);
+  Object.assign(queue.jobs[0], { status: 'running', started: '2026-10-28T10:00:00.000Z' });
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify(queue));
+  assert.ok(markRestore(config, 'issue-501', ['gpu-c.service']));
+  assert.deepEqual(JSON.parse(fs.readFileSync(pausedPath(config), 'utf8')), { stopped: [], restore: ['gpu-c.service'] });
+  const sys = fakeSystemctl([]);
+  const hooks = { ...countingHooks(), pause: quiet(sys) };
+  const result = await cancelJob(config, 'issue-501', hooks);
+  assert.equal(result.cancelled, true);
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')), ['start gpu-c.service']);
+  assert.ok(!fs.existsSync(pausedPath(config)));
+});
+
+test('a mark written while a pauser runs survives, and resume clears only what it started', async () => {
+  const config = pauseConfig();
+  const sys = fakeSystemctl(['gpu-a.service']);
+  const pauser = createPauser(config, { exec: sys.exec, log: () => {} });
+  await pauser.pause();
+  markRestoreFile(config, ['gpu-c.service']);
+  assert.deepEqual(readPaused(pausedPath(config)), { stopped: ['gpu-a.service'], restore: ['gpu-c.service'] });
+  assert.deepEqual(await pauser.resume(), []);
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')),
+    ['stop gpu-a.service', 'start gpu-a.service', 'start gpu-c.service']);
+  assert.ok(!fs.existsSync(pausedPath(config)));
+});
+
+test('a run without the queue leaves another run\'s marks alone', async () => {
+  const config = pauseConfig();
+  markRestoreFile(config, ['gpu-c.service']);
+  const sys = fakeSystemctl(['gpu-a.service']);
+  const pauser = createPauser(config, { exec: sys.exec, log: () => {}, leftover: false });
+  await pauser.pause();
+  await pauser.resume();
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')), ['stop gpu-a.service', 'start gpu-a.service']);
+  assert.deepEqual(readPaused(pausedPath(config)), { stopped: [], restore: ['gpu-c.service'] });
+});
+
+test('the state file of an earlier version, a bare list, still counts as stopped units', () => {
+  const config = pauseConfig();
+  fs.writeFileSync(pausedPath(config), JSON.stringify(['gpu-a.service', 'bad name']));
+  assert.deepEqual(readPaused(pausedPath(config)), { stopped: ['gpu-a.service'], restore: [] });
+});
+
+test('only a unit on the pause list can be marked', () => {
+  const config = pauseConfig({ units: ['gpu-*.service', 'runner?.service', 'tab-[1-4].service', 'x-[!a].service', 'bad['] });
+  const units = restoreUnits(config, parseArgs(['--restore', 'gpu-a.service', '--restore', 'runner1.service',
+    '--restore', 'tab-3.service', '--restore', 'x-b.service']));
+  assert.deepEqual(units, ['gpu-a.service', 'runner1.service', 'tab-3.service', 'x-b.service']);
+  assert.throws(() => restoreUnits(config, parseArgs(['--restore', 'tab-5.service'])), /not on pause.units/);
+  assert.throws(() => restoreUnits(config, parseArgs(['--restore', 'x-a.service'])), /not on pause.units/);
+  // A bracket that opens no class is literal, and `[!]` is not a class that matches anything.
+  assert.equal(onPauseList(['a[!].service'], 'ax.service'), false);
+  assert.equal(onPauseList(['b[x.service'], 'bx.service'), false);
+  assert.equal(onPauseList(['[^a].service'], 'a.service'), false);
+  assert.equal(onPauseList(['[^a].service'], 'b.service'), true);
+  assert.throws(() => restoreUnits(config, parseArgs(['--restore', 'sshd.service'])),
+    /--restore sshd.service is not on pause.units/);
+  assert.throws(() => restoreUnits(config, parseArgs(['--restore', 'gpu-a.service; reboot'])), /not on pause.units/);
+  assert.ok(onPauseList(['gpu-*'], 'gpu-a.service'));
+  assert.ok(!onPauseList(['gpu-*.service'], 'gpu-a.timer'));
+});
+
+test('--restore repeats and --restore-paused takes no value', () => {
+  const args = parseArgs(['--issue', '5', '--restore', 'a.service', '--restore', 'b.service', '--restore-paused']);
+  assert.deepEqual(args.restore, ['a.service', 'b.service']);
+  assert.equal(args.restorePaused, true);
+  assert.deepEqual(jobFrom(args), { issue: '5' });
+});
+
+test('--restore-paused marks the pause-list units that are down', () => {
+  const config = pauseConfig({ scope: 'user' });
+  const calls = [];
+  const exec = (command, args) => {
+    calls.push([command, ...args]);
+    return { status: 0, stdout: 'gpu-b.service loaded inactive dead Test\ngpu-c.service loaded failed failed Test\n' };
+  };
+  assert.deepEqual(restoreUnits(config, { restorePaused: true, restore: ['gpu-b.service'] }, { exec }),
+    ['gpu-b.service', 'gpu-c.service']);
+  assert.deepEqual(calls[0], ['systemctl', '--user', 'list-units', '--plain', '--no-legend', '--all',
+    '--state=inactive,failed', 'gpu-*.service']);
+});
+
+test('markRestore refuses a job that is not waiting or running', () => {
+  const config = pauseConfig();
+  assert.equal(markRestore(config, 'issue-9', ['gpu-c.service']), false);
+  addJob(config, { issue: '1' });
+  markRestore(config, 'issue-1', ['gpu-c.service']);
+  markRestore(config, 'issue-1', ['gpu-c.service', 'gpu-d.service']);
+  assert.deepEqual(readQueue(config).jobs[0].restore, ['gpu-c.service', 'gpu-d.service']);
+});
+
+test('queue status lists the units waiting to be restored, and queue restore starts them', async () => {
+  const config = pauseConfig();
+  addJob(config, { issue: '1' });
+  markRestore(config, 'issue-1', ['gpu-c.service']);
+  markRestoreFile(config, ['gpu-d.service']);
+  assert.deepEqual(restoreLines(config), ['restore pending gpu-d.service gpu-c.service']);
+  const sys = fakeSystemctl([], ['start gpu-d.service']);
+  const failedStart = await restorePaused(config, { pause: quiet(sys) });
+  assert.deepEqual(failedStart, ['gpu-d.service']);
+  assert.deepEqual(sys.verbs().map((c) => c.slice(-2).join(' ')), ['start gpu-d.service', 'start gpu-c.service']);
+  // A unit that did not start stays recorded for the next try.
+  assert.deepEqual(restoreLines(config), ['restore pending gpu-d.service']);
+  assert.equal(readQueue(config).jobs[0].restore, undefined);
+});
+
 test('pause config is validated', () => {
   assert.throws(() => pauseConfig({ scope: 'machine' }), /pause.scope/);
   assert.throws(() => pauseConfig({ units: 'gpu.service' }), /pause.units/);
-  assert.deepEqual(fixtureConfig().pause, { units: [], scope: 'system', busyProcess: null, pollSeconds: 5 });
+  assert.throws(() => pauseConfig({ maxWaitMinutes: -1 }), /pause.maxWaitMinutes/);
+  assert.throws(() => pauseConfig({ maxWaitMinutes: 'x' }), /pause.maxWaitMinutes/);
+  assert.throws(() => pauseConfig({ maxWaitMinutes: NaN }), /pause.maxWaitMinutes/);
+  assert.equal(pauseConfig({ maxWaitMinutes: 0 }).pause.maxWaitMinutes, 0);
+  assert.deepEqual(fixtureConfig().pause,
+    { units: [], scope: 'system', busyProcess: null, pollSeconds: 5, maxWaitMinutes: 60 });
 });
+
+const releaseConfig = (release = {}) => fixtureConfig({
+  release: { command: ['lemonade', 'unload'], ...release } });
+
+/** A releaser over a fake command: `status` is its exit code, `events` records order. */
+function fakeRelease(events, { status = 0, error = null, signal = null } = {}) {
+  const lines = [];
+  const exec = (command, args, timeoutMs) => {
+    events.push(['unload', command, ...args, timeoutMs]);
+    return { status, signal, error };
+  };
+  return { lines, make: (cfg) => createReleaser(cfg, { exec, log: (l) => lines.push(l) }) };
+}
+
+const releaseLines = (config, id) => readStatusLog(path.join(config.output, id, 'status.log'))
+  .filter((line) => line.phase === 'release');
+
+test('the model is unloaded once, after the last job and the units start again', async () => {
+  const config = releaseConfig();
+  const first = addJob(config, { issue: '1' });
+  const second = addJob(config, { issue: '2' });
+  const events = [];
+  const fake = fakeRelease(events);
+  const sys = fakeSystemctl(['gpu-a.service']);
+  const pauseCfg = Object.assign(config, { pause: { ...config.pause, units: ['gpu-*.service'] } });
+  const run = async (cfg, job) => { events.push(['run', job.id]); return { ok: true, ms: 1 }; };
+  const spy = (cfg) => {
+    const pauser = quiet(sys)(cfg);
+    return { pause: () => pauser.pause(), resume: async () => { events.push(['resume']); await pauser.resume(); } };
+  };
+  await drainQueue(pauseCfg, { run, pause: spy, release: fake.make });
+  assert.deepEqual(events.map((e) => e[0]), ['run', 'run', 'resume', 'unload']);
+  assert.deepEqual(events.at(-1), ['unload', 'lemonade', 'unload', 60000]);
+  assert.deepEqual(fake.lines, ['release: ok']);
+  const [line] = releaseLines(config, second.id);
+  assert.equal(line.event, 'pass');
+  assert.equal(line.job, second.id);
+  assert.deepEqual(releaseLines(config, first.id), []);
+});
+
+test('a failed job and a job that throws still end with the unload', async () => {
+  for (const run of [async () => ({ ok: false, phase: 'phase3', reason: 'model', ms: 1 }),
+    async () => { throw new Error('boom'); }]) {
+    const config = releaseConfig();
+    addJob(config, { issue: '1' });
+    const events = [];
+    const fake = fakeRelease(events);
+    const done = await drainQueue(config, { run, release: fake.make });
+    assert.equal(events.length, 1);
+    assert.equal(done[0].status, 'queued');
+    assert.equal(done[0].failures.length, 1);
+  }
+});
+
+test('the unload runs when the cutoff ends the run', async () => {
+  const config = releaseConfig();
+  addJob(config, { issue: '1' });
+  addJob(config, { issue: '2' });
+  let now = new Date('2026-01-01T06:00:00');
+  const clock = () => now;
+  const events = [];
+  const fake = fakeRelease(events);
+  const run = async () => { now = new Date('2026-01-01T07:30:00'); return { ok: true, ms: 1 }; };
+  const done = await drainQueue(config, { run, clock, release: fake.make });
+  assert.equal(done.length, 1);
+  assert.equal(events.length, 1);
+});
+
+test('a failed unload is logged and leaves the job result alone', async () => {
+  for (const failure of [{ status: 1 }, { status: null, error: { code: 'ENOENT' } },
+    { status: null, error: { code: 'ETIMEDOUT' } }, { status: null, signal: 'SIGKILL' }]) {
+    const config = releaseConfig();
+    addJob(config, { issue: '1' });
+    const fake = fakeRelease([], failure);
+    const done = await drainQueue(config, { run: okRun, release: fake.make });
+    assert.equal(done[0].status, 'passed');
+    assert.deepEqual(fake.lines, ['release: failed']);
+    const [line] = releaseLines(config, done[0].id);
+    assert.equal(line.event, 'fail');
+    assert.match(line.reason, /^(exit-1|signal|spawn-error|timeout)$/);
+  }
+});
+
+test('a command that throws is a failed unload, not a failed run', async () => {
+  const config = releaseConfig();
+  addJob(config, { issue: '1' });
+  const release = (cfg) => createReleaser(cfg, { log: () => {}, exec: () => { throw new Error('x'); } });
+  const done = await drainQueue(config, { run: okRun, release });
+  assert.equal(done[0].status, 'passed');
+  assert.equal(releaseLines(config, done[0].id)[0].reason, 'spawn-error');
+});
+
+test('the unload still runs when starting the paused units fails', async () => {
+  const config = releaseConfig();
+  addJob(config, { issue: '1' });
+  const events = [];
+  const pause = () => ({ pause: async () => {}, resume: async () => { throw new Error('start'); } });
+  await assert.rejects(drainQueue(config, { run: okRun, pause, release: fakeRelease(events).make }),
+    /start/);
+  assert.equal(events.length, 1);
+});
+
+test('a cancelling signal unloads once and the run ending does not unload again', async () => {
+  const config = releaseConfig();
+  const events = [];
+  const fake = fakeRelease(events);
+  const releaser = fake.make(config);
+  releaser.release();
+  assert.equal(events.length, 0);
+  releaser.note('job-1');
+  releaser.release();
+  releaser.release();
+  assert.equal(events.length, 1);
+  assert.equal(releaseLines(config, 'job-1')[0].event, 'pass');
+});
+
+test('nothing is unloaded when no job started or the command is empty', async () => {
+  const idle = releaseConfig();
+  const events = [];
+  await drainQueue(idle, { run: okRun, release: fakeRelease(events).make });
+  assert.deepEqual(events, []);
+
+  const off = releaseConfig({ command: [] });
+  addJob(off, { issue: '1' });
+  await drainQueue(off, { run: okRun, release: fakeRelease(events).make });
+  assert.deepEqual(events, []);
+});
+
+test('release config has defaults and is validated', () => {
+  assert.deepEqual(loadDefault().release, { command: ['lemonade', 'unload'], timeoutSeconds: 60 });
+  assert.throws(() => releaseConfig({ command: 'lemonade unload' }), /release.command/);
+  assert.throws(() => releaseConfig({ command: ['lemonade', ''] }), /release.command/);
+  assert.throws(() => releaseConfig({ timeoutSeconds: 0 }), /release.timeoutSeconds/);
+  assert.throws(() => fixtureConfig({ release: 'off' }), /release must be an object/);
+  assert.throws(() => fixtureConfig({ release: null }), /release must be an object/);
+});
+
+/** The config with no release block, so the shipped default shows. */
+function loadDefault() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-'));
+  const raw = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'pipeline.json'), 'utf8'));
+  Object.assign(raw, { repoRoot: FIXTURES, output: path.join(dir, 'out'),
+    queue: { file: path.join(dir, 'queue.json') } });
+  const file = path.join(dir, 'pipeline.json');
+  fs.writeFileSync(file, JSON.stringify(raw));
+  return loadConfig(file);
+}
 
 /** A config whose queue has the given sources, over the fixtures. */
 function sourcedConfig(sources, report = {}) {
@@ -1869,7 +3221,7 @@ test('the daily report lists each job, the queue depth and the failing jobs', ()
   assert.deepEqual(data.jobs.map((j) => [j.id, j.state]), [
     ['issue-104', 'PASS'], ['issue-103', 'PASS'], ['issue-102', 'PASS'], ['issue-101', 'PASS'],
     ['issue-100', 'PASS'], ['issue-400', 'RETRY'], ['issue-300', 'DROPPED']]);
-  assert.deepEqual(data.counts, { pass: 5, fail: 0, retry: 1, dropped: 1 });
+  assert.deepEqual(data.counts, { pass: 5, fail: 0, retry: 1, dropped: 1, memory: 0, stopped: 0, held: 0 });
   assert.deepEqual(data.queue, { depth: 2, retrying: 1, running: 1 });
   assert.deepEqual(data.failing.map((j) => j.id), ['issue-400', 'issue-300']);
   const text = renderReport(data);
@@ -1890,7 +3242,7 @@ test('the weekly rollup covers seven days and counts them by day', () => {
   const config = fixtureConfig();
   const data = reportData(config, reportQueue(config), { period: 'week', now: NOW, random: seededRandom(1) });
   assert.equal(data.jobs.length, 8);
-  assert.deepEqual(data.counts, { pass: 6, fail: 0, retry: 1, dropped: 1 });
+  assert.deepEqual(data.counts, { pass: 6, fail: 0, retry: 1, dropped: 1, memory: 0, stopped: 0, held: 0 });
   const text = renderReport(data);
   assert.match(text, /weekly rollup, 2026-10-28/);
   assert.match(text, /\| 2026-10-25 \| 1 \| 0 \|/);
@@ -2155,7 +3507,7 @@ const holdCard = (scenario, wrong = []) => {
     S4: [[BLOCK, OVERRIDE], OVERRIDDEN, REFUSED, ['Core Change Validation', 'Negative / Exclusion']],
   }[scenario];
   const expected = wrong.includes(scenario) ? bad : right;
-  return { title: `Hold ${scenario}`, scenario, mission: 'mission', focus: ['focus'], expected, rules,
+  return { title: `Run ${scenario}`, scenario, mission: 'mission', focus: ['focus'], expected, rules,
     objectives, derivation: 'Requirement',
     steps: [{ description: 'Act', expected, rules }] };
 };
@@ -2197,6 +3549,16 @@ async function resumedWithMismatch(repair, answers = {}) {
   return { second, result: await runHold(second, { resume: true }) };
 }
 
+test('a verification group cut off at length fails the job after one call, with no split', async () => {
+  const cut = () => { throw new ModelError('length', 'cut off'); };
+  const run = holdRun({ phase6_cards: holdCards(), phase6_verify: cut });
+  const result = await runHold(run);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.match(JSON.stringify(result), /model:length/);
+  assert.equal(callsNamed(run, 'phase6_verify').length, 1);
+  assert.ok(!statusLines(result.outDir).some((l) => l.event === 'split'));
+});
+
 test('a card that agrees with its rules and its last step passes untouched, after one verification call', async () => {
   const run = holdRun({ phase6_cards: holdCards(), phase6_verify: judge });
   const result = await runHold(run);
@@ -2236,6 +3598,64 @@ test('the prompt makes the precedence a default, and the override card passes on
   assert.equal(phase6Pass(result.outDir).redesigned, 0);
 });
 
+/** A Quality card in place of the Reset card: its result is one no cited rule states. */
+const qualityCards = (value) => ({ ...value, cards: value.cards.map((card) => (
+  card.scenario === 'S2' ? { ...holdCard('S2'), derivation: 'Quality' } : holdCard(card.scenario))) });
+/** Rejects a Quality card unless the prompt says to judge it on contradiction alone. */
+const strictOnQuality = (value, calls) => {
+  const { user } = calls.at(-1);
+  const cards = {};
+  for (const [, label, body] of user.matchAll(/### (C\d+)\n([\s\S]*?)(?=\n\n### C|\n## |$)/g)) {
+    const bad = /Derivation: Quality/.test(body) && !/contradicts a cited rule/.test(user);
+    cards[label] = bad ? { why: 'No cited rule states this.', verdict: 'does not follow' }
+      : { why: 'It does not contradict the rules.', verdict: 'follows' };
+  }
+  return { ...value, cards };
+};
+
+test('a Quality card is judged on contradiction, shown its derivation, and kept', async () => {
+  const run = holdRun({ phase6_cards: qualityCards, phase6_verify: strictOnQuality });
+  const result = await runHold(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const verify = callsNamed(run, 'phase6_verify');
+  assert.match(verify[0].user, /Derivation: Quality/);
+  assert.match(verify[0].user, /Never answer "does not follow" for a Quality card/);
+  assert.equal(callsNamed(run, 'phase6_redo').length, 0);
+  assert.equal(phase6Pass(result.outDir).removed, 0);
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.testCards.find((c) => c.title === 'Run S2').derivation, 'Quality');
+  assert.ok(!pack.assumptions.some((a) => a.assumption === 'No card in this pack is quality-derived.'));
+});
+
+test('a batch of Requirement cards is not told the Quality standard', async () => {
+  const run = holdRun({ phase6_cards: holdCards(), phase6_verify: judge });
+  const result = await runHold(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.doesNotMatch(callsNamed(run, 'phase6_verify')[0].user, /A card marked Quality/);
+  const pack = JSON.parse(read(result.packPath));
+  assert.ok(pack.assumptions.some((a) => a.assumption === 'No card in this pack is quality-derived.'));
+});
+
+test('a redone Quality card stays Quality and is told to avoid contradiction', async () => {
+  const rejectAll = (value, calls) => {
+    const out = strictOnQuality(value, calls);
+    for (const row of Object.values(out.cards)) row.verdict = 'does not follow';
+    return out;
+  };
+  const toRequirement = (value) => ({ ...value, cards: value.cards.map((card) => ({
+    ...holdCard(card.scenario), derivation: 'Requirement' })) });
+  const run = holdRun({ phase6_cards: qualityCards, phase6_verify: rejectAll,
+    phase6_redo: toRequirement, phase6_reverify: strictOnQuality });
+  const result = await runHold(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const redo = callsNamed(run, 'phase6_redo');
+  assert.ok(redo.length >= 1);
+  assert.ok(redo.some((call) => /as a Quality card/.test(call.user)
+    && /does not contradict the rules/.test(call.user)));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.testCards.find((c) => c.title === 'Run S2').derivation, 'Quality');
+});
+
 test('a card whose Expected Result follows the allowance is redesigned once, told why, and kept when it now follows', async () => {
   const run = holdRun({ phase6_cards: holdCards(['S1']), phase6_verify: judge,
     phase6_redo: holdCards(), phase6_reverify: judge });
@@ -2251,7 +3671,7 @@ test('a card whose Expected Result follows the allowance is redesigned once, tol
   assert.equal(pass.redesigned, 1);
   assert.equal(pass.removed, 0);
   const pack = JSON.parse(read(result.packPath));
-  const card = pack.testCards.find((c) => c.title === 'Hold S1');
+  const card = pack.testCards.find((c) => c.title === 'Run S1');
   assert.equal(card.expected, REFUSED);
   assert.equal(card.steps.at(-1).expected, REFUSED);
   assert.equal(pack.testCards.length, 4);
@@ -2268,11 +3688,11 @@ test('a card that fails twice is removed, its rule reads Missing with the reason
   assert.equal(pass.removed, 1);
   assert.equal(callsNamed(run, 'phase6_redo').length, 1);
   const pack = JSON.parse(read(result.packPath));
-  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Hold S1', 'Hold S3', 'Hold S4']);
+  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Run S1', 'Run S3', 'Run S4']);
   const row = pack.coverage.find((r) => r.ruleId === RESET);
   assert.equal(row.status, 'Missing');
   assert.match(row.gap, /was removed: Reset restores the saved value/);
-  assert.ok(pack.assumptions.some((a) => /Hold S2.*scenario S2/.test(a.assumption)
+  assert.ok(pack.assumptions.some((a) => /Run S2.*scenario S2/.test(a.assumption)
     && /Reset restores the saved value/.test(a.why)));
   // The rules the other cards cover keep their cards and get no Missing row.
   assert.ok(!pack.coverage.some((r) => [ALLOW, BLOCK].includes(r.ruleId) && r.status === 'Missing'));
@@ -2291,7 +3711,7 @@ test('a redesign that comes back with no card removes the card the same way', as
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(callsNamed(run, 'phase6_reverify').length, 0);
   const pack = JSON.parse(read(result.packPath));
-  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Hold S2', 'Hold S3', 'Hold S4']);
+  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Run S2', 'Run S3', 'Run S4']);
   assert.equal(pack.coverage.find((r) => r.ruleId === ALLOW).status, 'Missing');
 });
 
@@ -2305,7 +3725,7 @@ test('a skip the redesign answers with settles the scenario and gives the rule i
   const row = pack.coverage.find((r) => r.ruleId === RESET);
   assert.equal(row.status, 'Missing');
   assert.match(row.gap, /No card can cover this rule: The page keeps no saved value to restore\./);
-  assert.ok(pack.assumptions.some((a) => /Hold S2/.test(a.assumption)
+  assert.ok(pack.assumptions.some((a) => /Run S2/.test(a.assumption)
     && /keeps no saved value/.test(a.why)));
 });
 
@@ -2319,18 +3739,26 @@ test('a skip with a blank reason falls back to the verifier\'s reason', async ()
   assert.match(pack.coverage.find((r) => r.ruleId === RESET).gap, /No card can cover this rule: Reset restores the saved value\./);
 });
 
+// The first card also covers the override rule, which the two listed scenarios do not name.
+const withOverride = (cards) => (value) => {
+  const out = cards(value);
+  return { ...out, cards: out.cards.map((card) => (card.scenario !== 'S1' ? card : { ...card,
+    rules: [...card.rules, OVERRIDE],
+    steps: card.steps.map((st) => ({ ...st, rules: [...st.rules, OVERRIDE] })) })) };
+};
+
 test('a wrong card from the BREAK IT pass is checked too, and BREAK IT is dropped when it ends up empty', async () => {
   const run = holdRun({
     phase6_scenarios: (value) => ({ ...value, scenarios: [
-      { kind: 'decision', rules: [ALLOW, BLOCK], population: 'a patron with a current card and a hold',
+      { kind: 'decision', rules: [ALLOW, BLOCK, OVERRIDE], population: 'a patron with a current card and a hold',
         action: 'borrow an item', outcome: 'refused' },
       { kind: 'decision', rules: [RESET], population: 'a patron editing the loan length',
         action: 'edit, then press Reset', outcome: 'saved value' }] }),
     phase6_scenarios_d1_break: (value) => ({ ...value, scenarios: [
       { kind: 'break', rules: [BLOCK], population: 'a patron with a hold', action: 'borrow again and again',
         outcome: 'refused' }] }),
-    phase6_cards: holdCards(['S3']), phase6_verify: judge,
-    phase6_redo: holdCards(['S3']), phase6_reverify: judge });
+    phase6_cards: withOverride(holdCards(['S3'])), phase6_verify: judge,
+    phase6_redo: withOverride(holdCards(['S3'])), phase6_reverify: judge });
   const result = await runHold(run);
   assert.equal(result.ok, true, JSON.stringify(result));
   // The break pass's calls carry their own step names.
@@ -2342,7 +3770,7 @@ test('a wrong card from the BREAK IT pass is checked too, and BREAK IT is droppe
   assert.equal(pass.redesigned, 1);
   assert.equal(pass.removed, 1);
   const pack = JSON.parse(read(result.packPath));
-  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Hold S1', 'Hold S2']);
+  assert.deepEqual(pack.testCards.map((c) => c.title).sort(), ['Run S1', 'Run S2']);
   assert.equal(pack.objectives.find((r) => r.objective === 'BREAK IT').applicable, false);
   assert.ok(!pack.testSets.some((set) => set.objective === 'BREAK IT'));
 });
@@ -2390,7 +3818,7 @@ test('a card whose final step only words the result differently is kept and its 
   assert.equal(pass.redesigned, 0);
   assert.equal(pass.removed, 0);
   const pack = JSON.parse(read(result.packPath));
-  const card = pack.testCards.find((c) => c.title === 'Hold S1');
+  const card = pack.testCards.find((c) => c.title === 'Run S1');
   assert.equal(card.expected, REFUSED);
   assert.equal(card.steps.at(-1).expected, REFUSED);
 });
@@ -2516,8 +3944,10 @@ const plantedChecklist = () => {
 const correctingRepair = (value) => ({ ...value, coverage: [], limitations: [],
   cards: value.cards.map((card) => ({ ...card,
     steps: card.steps.map((step, i) => (i ? step : { ...step, description: 'Corrected step' })) })) });
-const failsRevalidation = { phase9_revalidation: (value) => ({ ...value, passed: false,
-  remaining: ['Step 1 still reads wrong'] }) };
+const failCheck = (value, check, why, fix = '') => ({ ...value,
+  checks: { ...value.checks, [check]: { why, verdict: 'fail', fix } } });
+const failsRevalidation = { phase9_revalidation: (value) =>
+  failCheck(value, 'All issues resolved', 'Step 1 still reads wrong') };
 
 test('the review reads the built workbook, applies a fix through repair, and rereads the rebuilt one', async () => {
   const config = fixtureConfig();
@@ -2545,6 +3975,30 @@ test('the review reads the built workbook, applies a fix through repair, and rer
   const validation = readPack(result.workbook).sheet('Workbook Validation');
   assert.ok(validation.rows.every((row) => row.cells.Status !== 'FAIL'));
   assertContentFree(read(path.join(result.outDir, 'status.log')));
+});
+
+test('the checklist calls run with thinking off; confidence, senior review and revalidation think', async () => {
+  const config = fixtureConfig();
+  const model = fakeModel({ ...DOCS, phase9_checklist: plantedChecklist(), phase8_repair: correctingRepair });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const checks = checksFor(model, 'phase9_checklist');
+  assert.deepEqual(checks.map((c) => c.schemaName), ['phase9_checklist', 'phase9_checklist_again']);
+  for (const call of checks) {
+    assert.equal(call.reasoning, false);
+    assert.equal(call.maxTokens, config.model.maxOutput);
+  }
+  for (const name of ['phase9_confidence_overall', 'phase9_confidence_steps', 'phase9_senior', 'phase9_revalidation']) {
+    const calls = checksFor(model, name);
+    assert.ok(calls.length, name);
+    assert.ok(calls.every((c) => c.reasoning === true), name);
+  }
+  const fields = ['remainingRisks', 'assumptions', 'regressionScope', 'breakItScope', 'manualReview'];
+  for (const field of fields) {
+    const calls = checksFor(model, `phase9_confidence_${field}`);
+    assert.ok(calls.length, field);
+    assert.ok(calls.every((c) => c.reasoning === false && c.maxTokens === config.model.maxOutput), field);
+  }
 });
 
 test('a finding repair cannot fix gets two rounds, then revalidation fails: Workbook Validation FAIL and a stop code', async () => {
@@ -2613,12 +4067,13 @@ test('a workbook too long for one review call is read in parts, and a failing pa
   const config = fixtureConfig();
   // The room shrinks once the cards are built, so only the review's reads are split.
   const shrink = (value) => {
-    Object.assign(config.model, { context: 7400, reasoningOutput: 1000, maxOutput: 500 });
+    Object.assign(config.model, { context: 7700, reasoningOutput: 1000, maxOutput: 500, retryOutput: 500 });
     return value;
   };
-  const longer = (value) => ({ ...value, cards: value.cards.map((c) => ({ ...c, title: 'Long title '.repeat(100) })) });
-  const model = fakeModel({ ...DOCS, phase6_cards: longer, phase7: shrink, phase9_revalidation: (value, calls) => ({ ...value,
-    remaining: [], passed: calls.filter((c) => c.schemaName.startsWith('phase9_revalidation')).length !== 2 }) });
+  const longer = (value) => ({ ...value, cards: value.cards.map((c) => ({ ...c, title: 'Long title '.repeat(150) })) });
+  const model = fakeModel({ ...DOCS, phase6_cards: longer, phase7: shrink, phase9_revalidation: (value, calls) =>
+    (calls.filter((c) => c.schemaName.startsWith('phase9_revalidation')).length === 2
+      ? failCheck(value, 'Traceability complete', 'A card lost its rule') : value) });
   const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
   const parts = checksFor(model, 'phase9_checklist');
   assert.ok(parts.length > 1, `${parts.length} checklist calls: ${JSON.stringify(result)}`);
@@ -2626,9 +4081,9 @@ test('a workbook too long for one review call is read in parts, and a failing pa
   assert.equal(result.reason, 'gate:revalidation-failed');
 });
 
-test('a placeholder fix, or one naming no card or rule, is not handed to repair', async () => {
+test('a placeholder fix, or one naming no card, rule or sheet, is not handed to repair', async () => {
   const flag = (fix) => () => ({ issues: [{ issue: 'The coverage reads thin', fix }], coverage: [], assumptions: [] });
-  for (const fix of ['N/A', 'None needed', 'Review the pack again', 'Strengthen the coverage of BR-LIB.UC01-001']) {
+  for (const fix of ['N/A', 'None needed', 'Review the pack again']) {
     const model = fakeModel({ ...DOCS, phase9_checklist: flag(fix) });
     const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
     assert.equal(result.ok, true, JSON.stringify(result));
@@ -2637,7 +4092,7 @@ test('a placeholder fix, or one naming no card or rule, is not handed to repair'
   }
 });
 
-test('a fix round leaves the pack\'s coverage rows and limitations as they were', async () => {
+test('a fix round for a finding that names only a card leaves the pack\'s coverage rows and limitations as they were', async () => {
   const model = fakeModel({ ...DOCS, phase9_checklist: plantedChecklist(),
     phase8_repair: (value) => ({ ...correctingRepair(value),
       coverage: [{ ruleId: 'BR-LIB.UC01-001', status: 'Missing', strength: 'Weak', gap: 'x', recommendation: 'y' }],
@@ -2647,6 +4102,106 @@ test('a fix round leaves the pack\'s coverage rows and limitations as they were'
   const pack = JSON.parse(read(result.packPath));
   assert.ok(!pack.coverage.some((row) => row.ruleId === 'BR-LIB.UC01-001' && row.status === 'Missing'));
   assert.ok(!Object.values(pack.limitations ?? {}).includes('A repair limitation.'));
+});
+
+const finding = (issue, fix) => () => ({ issues: [{ section: 'Coverage Completeness', issue, fix }],
+  coverage: [], assumptions: [] });
+const rowFor = (pack, ruleId) => pack.coverage.find((row) => row.ruleId === ruleId);
+
+test('a checklist finding that names a rule its cards cite goes to repair with those cards', async () => {
+  const model = fakeModel({ ...DOCS,
+    phase9_checklist: finding('BR-LIB.UC01-001 is covered by one thin card', 'Strengthen the coverage of BR-LIB.UC01-001'),
+    phase8_repair: (value) => ({ ...value, coverage: [], limitations: [] }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const repairs = checksFor(model, 'phase8_repair');
+  assert.ok(repairs.length >= 1);
+  assert.match(repairs[0].user, /Section: Coverage Completeness/);
+  assert.match(repairs[0].user, /Cards that cite BR-LIB\.UC01-001: TC-/);
+  assert.ok(checksFor(model, 'phase9_checklist').length > 1);
+});
+
+test('a finding that names the Coverage Matrix keeps the coverage row and limitation the repair wrote', async () => {
+  const model = fakeModel({ ...DOCS,
+    phase9_checklist: finding('The Coverage Matrix understates BR-LIB.UC01-001', 'Mark BR-LIB.UC01-001 Partially Covered in the Coverage Matrix'),
+    phase8_repair: (value) => ({ ...value,
+      coverage: [{ ruleId: 'BR-LIB.UC01-001', status: 'Partially Covered', strength: 'Moderate',
+        gap: 'Gap from the review', recommendation: 'Add a card.' }],
+      limitations: [{ sheet: 'Coverage Matrix', text: 'Limitation from the review.' }] }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(rowFor(pack, 'BR-LIB.UC01-001').gap, 'Gap from the review');
+  assert.equal(pack.limitations['Coverage Matrix'], 'Limitation from the review.');
+});
+
+test('a repaired coverage row that denies the coverage a card gives is not kept', async () => {
+  const model = fakeModel({ ...DOCS,
+    phase9_checklist: finding('BR-LIB.UC01-001 has no coverage', 'Mark BR-LIB.UC01-001 Missing'),
+    phase8_repair: (value) => ({ ...value,
+      coverage: [{ ruleId: 'BR-LIB.UC01-001', status: 'Missing', strength: 'None', gap: 'x', recommendation: 'y' }],
+      limitations: [] }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.notEqual(rowFor(JSON.parse(read(result.packPath)), 'BR-LIB.UC01-001').status, 'Missing');
+});
+
+test('a finding that asks for an assumption adds the assumption the repair wrote', async () => {
+  const model = fakeModel({ ...DOCS,
+    phase9_checklist: finding('The pack does not say which accounts are in scope', 'Add an assumption that only active accounts are in scope'),
+    phase8_repair: (value) => ({ ...value, coverage: [], limitations: [],
+      ...(value.assumptions ? { assumptions: [{ assumption: 'Only active accounts are in scope.',
+        why: 'The review asked.', impact: 'Inactive accounts are not tested.', clarification: 'Confirm.' }] } : {}) }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(JSON.parse(read(result.packPath)).assumptions.some((a) => a.assumption === 'Only active accounts are in scope.'));
+});
+
+test('the checklist asks each issue for its Validation section', async () => {
+  const model = fakeModel(DOCS);
+  await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  const [call] = checksFor(model, 'phase9_checklist');
+  assert.deepEqual(call.schema.properties.issues.items.properties.section.enum, [
+    'Requirements Matrix Integrity', 'Rule Integrity', 'Test Card Structure', 'Coverage Completeness',
+    'Traceability', 'Consistency']);
+});
+
+test('revalidation reads the review sheets and the validation sheet that the checklist skips', async () => {
+  const model = fakeModel(DOCS);
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const [checklist] = checksFor(model, 'phase9_checklist');
+  const [revalidation] = checksFor(model, 'phase9_revalidation');
+  for (const sheet of ['Executive Summary', 'Senior Tester Review', 'Tester Notes', 'Confidence Assessment',
+    'Workbook Validation']) {
+    assert.match(revalidation.user, new RegExp(`\\[${sheet} row`), sheet);
+    assert.doesNotMatch(checklist.user, new RegExp(`\\[${sheet} row`), sheet);
+  }
+});
+
+test('revalidation answers one verdict for each Revalidation check, and a failed check is named in what remains', async () => {
+  const model = fakeModel({ ...DOCS, ...failsRevalidation });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  const [call] = checksFor(model, 'phase9_revalidation');
+  assert.deepEqual(Object.keys(call.schema.properties.checks.properties), [
+    'All issues resolved', 'No regressions introduced', 'Requirement ID references preserved',
+    'Requirements Matrix integrity preserved', 'Traceability complete',
+    'No uncovered Requirement IDs remain unless explicitly documented', 'Test pack is ready for ALM execution']);
+  assert.equal(result.reason, 'gate:revalidation-failed');
+  assert.deepEqual(JSON.parse(read(result.packPath)).revalidation.remaining,
+    ['All issues resolved: Step 1 still reads wrong']);
+});
+
+test('a revalidation check that fails with a fix gets one repair round and one more revalidation', async () => {
+  const model = fakeModel({ ...DOCS, phase8_repair: correctingRepair,
+    phase9_revalidation: (value, calls) => (calls.filter((c) => c.schemaName.startsWith('phase9_revalidation')).length === 1
+      ? failCheck(value, 'Traceability complete', `${cardIdIn(calls.at(-1).user)} reads wrong`,
+        `Change step 1 of ${cardIdIn(calls.at(-1).user)} to read Corrected step`) : value) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(checksFor(model, 'phase8_repair_revalidation').length, 1);
+  assert.equal(checksFor(model, 'phase9_revalidation').length, 2);
+  assert.equal(JSON.parse(read(result.packPath)).revalidation, undefined);
 });
 
 test('a draft the builder writes no workbook for leaves the review the pack summary, and says so', async () => {
@@ -2663,10 +4218,10 @@ test('a draft the builder writes no workbook for leaves the review the pack summ
 test('every part of a split workbook opens with the rules index, and a job missing rules says which documents', async () => {
   const config = fixtureConfig();
   const shrink = (value) => {
-    Object.assign(config.model, { context: 7400, reasoningOutput: 1000, maxOutput: 500 });
+    Object.assign(config.model, { context: 7400, reasoningOutput: 1000, maxOutput: 500, retryOutput: 500 });
     return value;
   };
-  const longer = (value) => ({ ...value, cards: value.cards.map((c) => ({ ...c, title: 'Long title '.repeat(100) })) });
+  const longer = (value) => ({ ...value, cards: value.cards.map((c) => ({ ...c, title: 'Long title '.repeat(150) })) });
   const model = fakeModel({ ...DOCS, phase6_cards: longer, phase7: shrink });
   await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
   const parts = checksFor(model, 'phase9_checklist');
@@ -2764,61 +4319,181 @@ test('the Phase 4 rating call carries the executive summary its batches are budg
 
 // ---- Phase 9: the confidence assessment field by field, and the senior review last ----
 
-test('each Confidence Assessment field is written on its own from the finished workbook, before the senior review', async () => {
+test('each Confidence Assessment field is written on its own after the senior review, and the overall level comes last', async () => {
   const model = fakeModel(DOCS);
   const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
   assert.equal(result.ok, true, JSON.stringify(result));
   const names = [...new Set(model.calls.map((call) => call.schemaName))]
     .filter((name) => /^phase9_(confidence|senior)/.test(name));
-  assert.deepEqual(names, ['phase9_confidence_overall', 'phase9_confidence_coverage',
-    'phase9_confidence_remainingRisks', 'phase9_confidence_assumptions',
-    'phase9_confidence_regressionScope', 'phase9_confidence_breakItScope',
-    'phase9_confidence_manualReview', 'phase9_senior']);
-  // A field call asks for that field alone and sees the fields already written.
-  const second = model.calls.find((call) => call.schemaName === 'phase9_confidence_remainingRisks');
-  assert.deepEqual(Object.keys(second.schema.properties), ['remainingRisks']);
-  assert.match(second.user, /Fields already written[\s\S]*Confidence Assessment coverage: coverage value/);
-  // The review of the finished workbook: card rows from the built workbook are in view.
+  assert.deepEqual(names, ['phase9_senior', 'phase9_confidence_remainingRisks',
+    'phase9_confidence_assumptions', 'phase9_confidence_regressionScope',
+    'phase9_confidence_breakItScope', 'phase9_confidence_manualReview',
+    'phase9_confidence_steps', 'phase9_confidence_overall']);
+  // A field call asks for that field alone, sees the fields already written, and sees the cards.
+  const second = model.calls.find((call) => call.schemaName === 'phase9_confidence_assumptions');
+  assert.deepEqual(Object.keys(second.schema.properties), ['assumptions']);
+  assert.match(second.user, /Fields already written[\s\S]*Confidence Assessment remainingRisks:/);
+  assert.match(second.user, /Cards and the rules they cite[\s\S]*TC-MOD-501-001/);
   assert.match(second.user, /\[Test Cards Markdown row \d+\]/);
-  // The senior review comes last and sees the confidence assessment.
+  // The senior review no longer sees a confidence assessment; the assessment sees the review.
   const senior = model.calls.find((call) => call.schemaName === 'phase9_senior');
-  assert.match(senior.user, /Confidence assessment[\s\S]*"coverage":"coverage value"/);
+  assert.doesNotMatch(senior.user, /Confidence assessment/);
+  assert.match(second.user, /Senior review/);
   const pack = JSON.parse(read(result.packPath));
-  assert.equal(pack.confidence.manualReview, 'manualReview value');
+  assert.match(pack.confidence.manualReview, /^The manualReview is covered by /);
   assert.equal(pack.confidence.overall, 'High');
 });
 
+test('the Coverage field is counted from the Coverage Matrix in code, never asked of the model', async () => {
+  const model = fakeModel({ ...DOCS, phase9_confidence_overall: (value) => ({ ...value, overall: 'Medium' }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(model.calls.filter((call) => call.schemaName === 'phase9_confidence_coverage').length, 0);
+  const pack = JSON.parse(read(result.packPath));
+  assert.match(pack.confidence.coverage, /^Of \d+ rule\(s\) in the Coverage Matrix: \d+ /);
+  const steps = model.calls.find((call) => call.schemaName === 'phase9_confidence_steps');
+  assert.deepEqual(Object.keys(steps.schema.properties.steps.properties),
+    ['rules', 'decisions', 'coverage', 'regression', 'qualityDerived', 'breakIt',
+      'professionalReview', 'residualRisk']);
+});
+
+test('a Low rating builds the draft workbook with no review-workbook-missing warning', async () => {
+  const model = fakeModel({ ...DOCS, phase9_confidence_overall: (value) => ({ ...value, overall: 'Low',
+    reason: 'BR-LIB.UC01-001 has only one card and the criteria for Medium are not met.' }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const lines = statusLines(result.outDir);
+  assert.ok(!lines.some((l) => l.reason === 'review-workbook-missing'), 'a draft failed to build');
+  const pack = JSON.parse(read(result.packPath));
+  assert.match(pack.limitations['Confidence Assessment'], /only one card/);
+});
+
+test('every level carries its reason, which follows the level in the Executive Summary', async () => {
+  const model = fakeModel({ ...DOCS, phase9_confidence_overall: (value) => ({ ...value, overall: 'Medium',
+    reason: 'BR-LIB.UC01-002 meets the Medium criteria with two cards.' }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.executiveSummary.confidence, 'Medium. BR-LIB.UC01-002 meets the Medium criteria with two cards.');
+  assert.equal(pack.limitations['Confidence Assessment'], undefined);
+});
+
 test('a field that repeats another is asked for again with what was wrong', async () => {
-  const long = 'Every rule is covered by at least one card in this workbook.';
+  const long = 'Every rule is covered by at least one card, such as TC-MOD-501-001, in this workbook.';
   const model = fakeModel({ ...DOCS,
-    'phase9_confidence_coverage': () => ({ coverage: long }),
-    'phase9_confidence_remainingRisks': (value, calls) => {
-      const tries = calls.filter((call) => call.schemaName === 'phase9_confidence_remainingRisks').length;
-      return tries === 1 ? { remainingRisks: long } : value;
+    'phase9_confidence_remainingRisks': () => ({ remainingRisks: long }),
+    'phase9_confidence_assumptions': (value, calls) => {
+      const tries = calls.filter((call) => call.schemaName === 'phase9_confidence_assumptions').length;
+      return tries === 1 ? { assumptions: long } : value;
     } });
   const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
   assert.equal(result.ok, true, JSON.stringify(result));
-  const asks = model.calls.filter((call) => call.schemaName === 'phase9_confidence_remainingRisks');
+  const asks = model.calls.filter((call) => call.schemaName === 'phase9_confidence_assumptions');
   assert.equal(asks.length, 2);
-  assert.match(asks[1].user, /refused: it repeats the text of Confidence Assessment coverage/);
-  assert.equal(JSON.parse(read(result.packPath)).confidence.remainingRisks, 'remainingRisks value');
+  assert.match(asks[1].user, /refused: it repeats the text of Confidence Assessment remainingRisks/);
+  assert.match(JSON.parse(read(result.packPath)).confidence.assumptions, /^The assumptions is covered/);
 });
 
 test('a field that cites a card the workbook lacks is refused, and a second refusal stops the job', async () => {
-  const cited = (value) => ({ ...value, coverage: 'Card TC-MOD-501-999 covers it.' });
-  const once = fakeModel({ ...DOCS, 'phase9_confidence_coverage': (value, calls) =>
-    (calls.filter((call) => call.schemaName === 'phase9_confidence_coverage').length === 1 ? cited(value) : value) });
+  const cited = () => ({ remainingRisks: 'Card TC-MOD-501-999 covers it, and nothing else remains open.' });
+  const once = fakeModel({ ...DOCS, 'phase9_confidence_remainingRisks': (value, calls) =>
+    (calls.filter((call) => call.schemaName === 'phase9_confidence_remainingRisks').length === 1 ? cited() : value) });
   const fixed = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model: once, echo: false });
   assert.equal(fixed.ok, true, JSON.stringify(fixed));
-  const asks = once.calls.filter((call) => call.schemaName === 'phase9_confidence_coverage');
+  const asks = once.calls.filter((call) => call.schemaName === 'phase9_confidence_remainingRisks');
   assert.match(asks[1].user, /refused: it cites TC-MOD-501-999, which the workbook does not hold/);
 
-  const always = fakeModel({ ...DOCS, 'phase9_confidence_coverage': cited });
+  const always = fakeModel({ ...DOCS, 'phase9_confidence_remainingRisks': cited });
   const stopped = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model: always, echo: false });
   assert.equal(stopped.ok, false);
   assert.equal(stopped.reason, 'gate:review-field-unsupported');
   assert.equal(stopped.phase, 'phase9-confidence');
   assertContentFree(read(path.join(stopped.outDir, 'status.log')));
+});
+
+test('a field that is too short, or names no rule or card, is refused', async () => {
+  for (const [text, why] of [['Nothing remains.', /too short/],
+    ['Nothing remains open after these cards were written for the change.', /names no rule or card/]]) {
+    const model = fakeModel({ ...DOCS, 'phase9_confidence_remainingRisks': (value, calls) =>
+      (calls.filter((call) => call.schemaName === 'phase9_confidence_remainingRisks').length === 1
+        ? { remainingRisks: text } : value) });
+    const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const asks = model.calls.filter((call) => call.schemaName === 'phase9_confidence_remainingRisks');
+    assert.match(asks[1].user, why);
+  }
+});
+
+test('a manual review answer may name no ID, and an assumptions answer too when the pack has none', async () => {
+  const model = fakeModel({ ...DOCS,
+    phase9_confidence_manualReview: () => ({ manualReview: 'Nothing needs a hand check beyond the normal execution of the cards.' }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(model.calls.filter((c) => c.schemaName === 'phase9_confidence_manualReview').length, 1);
+});
+
+test('the calls that rate confidence never read the stand-in rating as a rating', async () => {
+  const model = fakeModel(DOCS);
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  for (const name of ['phase9_confidence_remainingRisks', 'phase9_confidence_steps', 'phase9_confidence_overall']) {
+    const call = model.calls.find((c) => c.schemaName === name);
+    assert.doesNotMatch(call.user, /\[Dashboard row \d+\][^\n]*Overall Confidence/, name);
+  }
+});
+
+test('a reason that states a different level is asked for again', async () => {
+  const model = fakeModel({ ...DOCS, phase9_confidence_overall: (value, calls) => ({ ...value, overall: 'Medium',
+    reason: calls.filter((c) => c.schemaName === 'phase9_confidence_overall').length === 1
+      ? 'BR-LIB.UC01-001 holds it down because confidence is low there.'
+      : 'BR-LIB.UC01-001 has two cards and meets the Medium criteria.' }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const asks = model.calls.filter((c) => c.schemaName === 'phase9_confidence_overall');
+  assert.equal(asks.length, 2);
+  assert.match(asks[1].user, /Your last reason was refused/);
+  assert.match(JSON.parse(read(result.packPath)).confidence.reason, /two cards/);
+});
+
+test('a reason that still states another level after the second try loses that phrase', async () => {
+  const model = fakeModel({ ...DOCS, phase9_confidence_overall: (value) => ({ ...value, overall: 'High',
+    reason: 'Confidence is High for BR-LIB.UC01-001, though confidence is Medium elsewhere and confidence is Low there.' }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.doesNotMatch(pack.confidence.reason, /confidence is (Medium|Low)/i);
+  assert.match(pack.confidence.reason, /^Confidence is High/);
+  assert.match(pack.executiveSummary.confidence, /^High\. /);
+});
+
+test('a revalidation that leaves items open rates the pack again, with the Low limitation and the report', async () => {
+  const model = fakeModel({ ...DOCS,
+    phase9_revalidation: (value) => failCheck(value, 'Traceability complete', 'A card lost its rule'),
+    phase9_confidence_overall: (value, calls) => (calls.filter((c) => c.schemaName === 'phase9_confidence_overall').length === 1
+      ? { ...value, overall: 'High', reason: 'BR-LIB.UC01-001 is fully covered.' }
+      : { ...value, overall: 'Low', reason: 'Revalidation left Traceability open on BR-LIB.UC01-001.' }) });
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.reason, 'gate:revalidation-failed');
+  assert.equal(model.calls.filter((c) => c.schemaName === 'phase9_confidence_overall').length, 2);
+  const again = model.calls.filter((c) => c.schemaName === 'phase9_confidence_overall')[1];
+  assert.match(again.user, /Revalidation items still open[\s\S]*Traceability complete/);
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.confidence.overall, 'Low');
+  assert.match(pack.limitations['Confidence Assessment'], /Traceability open/);
+  assert.match(pack.executiveSummary.confidence, /^Low\. /);
+  const line = statusLines(result.outDir).findLast((l) => l.phase === 'phase9-revalidate' && l.event === 'pass');
+  assert.equal(line.confidence, 'Low');
+});
+
+test('a job saved at the confidence step before the senior review moved reruns both', async () => {
+  const { readCheckpoint, checkpointPath } = await import('./run.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'checkpoint-'));
+  fs.mkdirSync(path.join(dir, 'work'));
+  fs.writeFileSync(checkpointPath(dir), JSON.stringify({ phase: 'phase9-confidence', state: {} }));
+  assert.equal(readCheckpoint(dir).phase, 'phase9-checklist');
+  fs.writeFileSync(checkpointPath(dir), JSON.stringify({ phase: 'phase9-confidence',
+    state: { confidenceSteps: [] } }));
+  assert.equal(readCheckpoint(dir).phase, 'phase9-confidence');
 });
 
 test('a senior review answer with a repeated or unsupported field is asked for again', async () => {
@@ -2928,37 +4603,51 @@ test('assumptions citing rule IDs or counts the pack does not hold are dropped',
     'The 2 impacted rules are read.', 'The 1 card is read.', 'OPS-009 ran limited.']);
 });
 
+// An evidence rule as a consumer's config holds it; the pipeline itself names no such rule.
+const EVIDENCE_RULE = {
+  id: 'stageClosure',
+  objective: '^integration\\b',
+  claim: 'the change includes the stage closure submit after a FATL downgrade',
+  terms: ['\\bFATLs?\\b[^.\\n]{0,80}\\bdowngrad|\\bdowngrad[^.\\n]{0,80}\\bFATLs?\\b',
+    '\\bstage[ -]closures?\\b[^.\\n]{0,80}\\bsubmi(?:t|ts|tted|tting|ssion)\\b|\\bsubmi(?:t|ts|tted|tting|ssion)\\b[^.\\n]{0,80}\\bstage[ -]closures?\\b'],
+  reason: 'The change includes the stage closure submit after a FATL downgrade,'
+    + ' so the window is tested together with the stage it closes.',
+};
+
 /**
  * Phase 5 with a model that marks every objective not applicable and answers the
- * stage closure fields from `closure`; returns the Integration Testing row and the log.
+ * evidence rows from `closure`; returns the Integration Testing row and the log.
+ * `options.evidence` is the config's evidence rules, `options.suite` runs a suite pack.
  */
-async function runPhase5(description, rules, closure, objectives = ['Core Change Validation', 'Integration Testing', 'BREAK IT'], context = 100000) {
+async function runPhase5(description, rules, closure, objectives = ['Core Change Validation', 'Integration Testing', 'BREAK IT'], context = 100000, options = {}) {
+  const evidence = options.evidence ?? [EVIDENCE_RULE];
   const model = fakeModel({ phase5: (value) => {
     for (const row of Object.values(value.objectives)) row.applicable = false;
     return { ...value, ...closure };
   } });
   const logged = [];
   const ctx = { pack: { rules, executiveSummary: {} }, ref: { core: [], chapters: () => [] },
-    job: {}, builder: { OBJECTIVES: objectives }, coreObjective: 'Core Change Validation',
+    job: options.suite ? { suite: 'SUITE' } : {}, builder: { OBJECTIVES: objectives }, coreObjective: 'Core Change Validation',
     description, model, calls: 0, tokens: { prompt: 0, output: 0 },
-    config: { model: { context, reasoningOutput: 100, maxOutput: 100 } },
+    config: { model: { context, reasoningOutput: 100, maxOutput: 100 }, objectiveEvidence: evidence },
     logs: { detail: (label, text) => logged.push(`${label}: ${text}`), status() {} }, private() {} };
   await phase5(ctx);
   return { row: ctx.pack.objectives.find((row) => row.objective === 'Integration Testing'), logged, model };
 }
 
 const SENTENCE = 'The window submits the stage closure after a FATL downgrade.';
-const claim = (quote) => ({ stageClosureAfterDowngrade: true, stageClosureQuote: quote });
+const claim = (quote, id = EVIDENCE_RULE.id) => ({ evidence: { [id]: { holds: true, quote } } });
 const impacted = (impact, summary = SENTENCE) => ({ impact, name: 'Rule', summary });
 
 test('a quote found in the ALM descriptions marks Integration Testing applicable', async () => {
   const { row, model } = await runPhase5(`Short Description: ${SENTENCE}`, [],
     claim('the window submits the  STAGE closure after a FATL downgrade.'));
   assert.equal(row.applicable, true);
-  assert.match(row.reason, /stage closure submit after a FATL downgrade/);
+  assert.equal(row.reason, EVIDENCE_RULE.reason);
   const asked = model.calls.find((c) => c.schemaName.startsWith('phase5'));
-  assert.ok(asked.schema.properties.stageClosureQuote);
-  assert.match(asked.user, /stageClosureQuote/);
+  assert.ok(asked.schema.properties.evidence);
+  assert.match(asked.user, /evidence\.stageClosure\.quote/);
+  assert.match(asked.user, /Integration Testing is applicable when the change includes the stage closure/);
 });
 
 test('a quote from a Direct Change rule is accepted, one from a Not Impacted rule is not', async () => {
@@ -2966,7 +4655,7 @@ test('a quote from a Direct Change rule is accepted, one from a Not Impacted rul
   assert.equal(ok.row.applicable, true);
   const no = await runPhase5('x', [impacted('Not Impacted')], claim(SENTENCE));
   assert.equal(no.row.applicable, false);
-  assert.match(no.logged.join('\n'), /evidence was rejected/);
+  assert.match(no.logged.join('\n'), /evidence stageClosure was rejected/);
 });
 
 test('the prompt lists the impacted rules, and a quote from one is accepted when the description lacks the terms', async () => {
@@ -3025,7 +4714,7 @@ test('plural FATLs and stage closures are accepted in a quote', async () => {
 test('a quote that is not in the record is rejected and logged', async () => {
   const { row, logged } = await runPhase5('A plain change.', [], claim(SENTENCE));
   assert.equal(row.applicable, false);
-  assert.match(logged.join('\n'), /evidence was rejected: quote not in/);
+  assert.match(logged.join('\n'), /evidence stageClosure was rejected: quote not in/);
 });
 
 test('a quote that names only one of the downgrade and the submit is rejected', async () => {
@@ -3033,15 +4722,69 @@ test('a quote that names only one of the downgrade and the submit is rejected', 
     'The window submits the stage closure.']) {
     const { row, logged } = await runPhase5(`Short Description: ${text}`, [], claim(text));
     assert.equal(row.applicable, false, text);
-    assert.match(logged.join('\n'), /lacks a FATL downgrade/);
+    assert.match(logged.join('\n'), /lacks the terms of the rule/);
   }
 });
 
 test('a missing quote or a false answer leaves the model\'s choice', async () => {
   assert.equal((await runPhase5(SENTENCE, [], claim(''))).row.applicable, false);
-  const denied = await runPhase5(SENTENCE, [], { stageClosureAfterDowngrade: false, stageClosureQuote: SENTENCE });
+  const denied = await runPhase5(SENTENCE, [], { evidence: { stageClosure: { holds: false, quote: SENTENCE } } });
   assert.equal(denied.row.applicable, false);
   assert.ok(!denied.logged.some((line) => /rejected/.test(line)));
+});
+
+test('with no evidence rules in the config Phase 5 asks for no evidence and keeps the model\'s choice', async () => {
+  const { row, model, logged } = await runPhase5(`Short Description: ${SENTENCE}`, [impacted('Direct Change')],
+    {}, undefined, undefined, { evidence: [] });
+  assert.equal(row.applicable, false);
+  const asked = model.calls.find((c) => c.schemaName.startsWith('phase5'));
+  assert.equal(asked.schema.properties.evidence, undefined);
+  assert.ok(!asked.user.includes('Direct Change and Indirect Impact rules'));
+  assert.ok(!/stage closure|FATL/i.test(asked.user.replace(SENTENCE, '')));
+  assert.ok(!logged.some((line) => /evidence/.test(line.replace("reply: [object Object]", ""))));
+});
+
+const OTHER_RULE = { id: 'batchWindow', objective: '^core\\b', claim: 'the change runs in the batch window',
+  terms: ['\\bbatch\\b[^.]{0,40}\\bwindow\\b'], reason: 'The batch window is part of the change.' };
+
+test('with two evidence rules only the one whose terms the quote holds applies', async () => {
+  const both = { evidence: { stageClosure: { holds: true, quote: SENTENCE.toLowerCase() },
+    batchWindow: { holds: true, quote: SENTENCE } } };
+  const run = await runPhase5(`Short Description: ${SENTENCE}`, [], both, undefined, undefined,
+    { evidence: [EVIDENCE_RULE, OTHER_RULE] });
+  assert.equal(run.row.applicable, true);
+  assert.match(run.logged.join('\n'), /evidence batchWindow was rejected: quote lacks the terms/);
+  const asked = run.model.calls.find((c) => c.schemaName.startsWith('phase5'));
+  assert.ok(asked.schema.properties.evidence);
+});
+
+test('an evidence rule whose objective pattern matches nothing is logged and skipped', async () => {
+  const none = { ...EVIDENCE_RULE, objective: '^no such objective$' };
+  const { row, logged } = await runPhase5(`Short Description: ${SENTENCE}`, [], claim(SENTENCE),
+    undefined, undefined, { evidence: [none] });
+  assert.equal(row.applicable, false);
+  assert.match(logged.join('\n'), /evidence stageClosure names no objective/);
+});
+
+test('evidence never turns an applicable objective off, and keeps its reason', async () => {
+  const model = fakeModel({ phase5: (value) => {
+    for (const row of Object.values(value.objectives)) { row.applicable = true; row.reason = 'The model\'s reason.'; }
+    return { ...value, ...claim(SENTENCE) };
+  } });
+  const ctx = { pack: { rules: [], executiveSummary: {} }, ref: { core: [], chapters: () => [] },
+    job: {}, builder: { OBJECTIVES: ['Core Change Validation', 'Integration Testing'] },
+    coreObjective: 'Core Change Validation', description: `Short Description: ${SENTENCE}`, model, calls: 0,
+    tokens: { prompt: 0, output: 0 },
+    config: { model: { context: 100000, reasoningOutput: 100, maxOutput: 100 }, objectiveEvidence: [EVIDENCE_RULE] },
+    logs: { detail() {}, status() {} }, private() {} };
+  await phase5(ctx);
+  assert.ok(ctx.pack.objectives.every((row) => row.applicable && row.reason === 'The model\'s reason.'));
+});
+
+test('a suite pack asks for no evidence', async () => {
+  const { model } = await runPhase5(SENTENCE, [], {}, undefined, undefined, { suite: true });
+  const asked = model.calls.find((c) => c.schemaName.startsWith('phase5'));
+  assert.equal(asked.schema.properties.evidence, undefined);
 });
 
 test('an objective list without Integration Testing is unaffected by a valid claim', async () => {
@@ -3084,12 +4827,12 @@ test('CAMP Designs counts only as a folder, and only a CAMP design in the descri
   assert.equal(documentInputs([other], 'Short Description: Update the CAMP design.').missing.length, 2);
 });
 
-test('a NOT READY partial pack names what code found missing', async () => {
+test('an INSUFFICIENT INPUTS partial pack names what code found missing', async () => {
   const config = fixtureConfig();
   const result = await runJob(config, { issue: '999' }, { model: fakeModel(), echo: false });
   assert.equal(result.reason, 'gate:missing-inputs');
   const pack = JSON.parse(read(path.join(result.outDir, 'work', 'partial-pack.json')));
-  assert.equal(pack.intake.readiness, 'NOT READY');
+  assert.equal(pack.intake.readiness, 'INSUFFICIENT INPUTS');
   assert.ok(pack.intake.missing.includes('Description of the defect or change.'));
 });
 
@@ -3112,6 +4855,21 @@ test('a number is skipped only as a section, step, page, range end or year', () 
   dropUnfoundedAssumptions({}, pack);
   assert.deepEqual(pack.assumptions.map((a) => a.assumption),
     ['Rules 3 to 40 rules apply.', 'See page 9 rules.', 'Since 2026 rules changed.']);
+});
+
+test('intake names a document outside the root or not a file, and check reports it', async () => {
+  const config = fixtureConfig();
+  const outside = path.relative(FIXTURES, path.join(FIXTURES, '..', 'phases.mjs')).split(path.sep).join('/');
+  const result = await runJob(config, { issue: '501', change: '7001', docs: [outside, 'docs/LIB'] },
+    { model: fakeModel(), echo: false });
+  const pack = JSON.parse(read(path.join(result.outDir, 'work', 'partial-pack.json')));
+  assert.deepEqual(pack.intake.missing, ['Source documents.', `Document file is outside the repository: ${outside}.`,
+    'Document path is not a file: docs/LIB.']);
+  const checked = spawnSync(process.execPath, [path.join(HERE, 'build-pack.mjs'), 'check',
+    '--config', path.join(FIXTURES, 'pipeline.json'), '--issue', '501', '--doc', outside],
+  { encoding: 'utf8' });
+  assert.equal(checked.status, 1);
+  assert.match(checked.stdout, /document-1  missing  document-file/);
 });
 
 test('missing inputs read as sentences, name the missing file and list it once', async () => {
@@ -3155,4 +4913,1401 @@ test('a range with and keeps its number, a list of counts does not', () => {
 test('the model defaults to a 128000-token context', () => {
   const { model } = fixtureConfig();
   assert.equal(model.context, 128000);
+});
+
+const LOADED = (extra = {}) => ({ all_models_loaded: [{ model_name: 'm a/b',
+  backend_url: 'http://127.0.0.1:8001/v1', recipe_options: { ctx_size: 65536 }, ...extra }] });
+const NOT_LOADED = { all_models_loaded: [] };
+const windowClient = (routes, urls = []) => modelClient({ endpoint: 'http://localhost:13305/api/v1',
+  name: 'm a/b', fetchImpl: async (url, options = {}) => {
+    urls.push({ url: String(url), method: options.method ?? 'GET' });
+    const hit = Object.entries(routes).find(([suffix]) => String(url).endsWith(suffix));
+    if (!hit || hit[1] === 'throw') throw new Error('unreachable');
+    const { status = 200, body = hit[1] } = typeof hit[1]?.status === 'number' ? hit[1] : {};
+    return { ok: status >= 200 && status < 300, status, json: async () => body };
+  } });
+
+test('the context window comes from the backend, the loaded entry, or the saved options', async () => {
+  assert.deepEqual(await windowClient({ '/health': LOADED(), '/props': 'throw' }).contextWindow(), { size: 65536, guess: false });
+  const props = { default_generation_settings: { n_ctx: 32768 } };
+  assert.deepEqual(await windowClient({ '/health': LOADED(), '/props': props }).contextWindow(), { size: 32768, guess: false });
+  const saved = windowClient({ '/health': NOT_LOADED,
+    '/models/m%20a%2Fb': { recipe_options: { ctx_size: 49152 } } });
+  assert.deepEqual(await saved.contextWindow(), { size: 49152, guess: false });
+});
+
+test('the context window is null when nothing can be read', async () => {
+  assert.equal(await windowClient({}).contextWindow(), null);
+  assert.equal(await windowClient({ '/health': NOT_LOADED, '/models/m%20a%2Fb': {} }).contextWindow(), null);
+});
+
+const SAVED_SIZE = (size) => ({ recipe_options: { ctx_size: size } });
+
+test('a failed health check reads the saved window as a guess', async () => {
+  const client = windowClient({ '/health': 'throw', '/models/m%20a%2Fb': SAVED_SIZE(65536) });
+  assert.deepEqual(await client.contextWindow(), { size: 65536, guess: true });
+});
+
+test('a health check that answers with an error or no loaded list gives a guess', async () => {
+  const saved = { '/models/m%20a%2Fb': SAVED_SIZE(65536) };
+  const busy = windowClient({ '/health': { status: 500, body: { error: 'busy' } }, ...saved });
+  assert.deepEqual(await busy.contextWindow(), { size: 65536, guess: true });
+  const noList = windowClient({ '/health': {}, ...saved });
+  assert.deepEqual(await noList.contextWindow(), { size: 65536, guess: true });
+  // The same body with a loaded model listed would be read as sure.
+  const body = { status: 500, body: LOADED() };
+  assert.deepEqual(await windowClient({ '/health': body, '/props': 'throw', ...saved }).contextWindow(),
+    { size: 65536, guess: true });
+});
+
+test('a guess lowers the window but never raises a smaller one', async () => {
+  const { readWindow } = await import('./phases.mjs');
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 128000, maxOutput: 500, reasoningOutput: 500 } });
+  const run = async (health, saved, window) => {
+    const ctx = { config, job: { id: 'j' }, logs: { status() {}, detail() {} }, window,
+      model: windowClient({ '/health': health, '/models/m%20a%2Fb': SAVED_SIZE(saved) }) };
+    await readWindow(ctx, 'p');
+    return ctx.window;
+  };
+  assert.equal(await run('throw', 65536, undefined), 65536);
+  assert.equal(await run('throw', 128000, 32768), 32768);
+  assert.equal(await run({ status: 500, body: { error: 'busy' } }, 65536, undefined), 65536);
+  assert.equal(await run({ status: 500, body: { error: 'busy' } }, 128000, 32768), 32768);
+  assert.equal(await run({}, 65536, undefined), 65536);
+  assert.equal(await run({}, 128000, 32768), 32768);
+});
+
+test('the fallback window is per slot', async () => {
+  const size = async (args) => (await windowClient({ '/health': LOADED({ recipe_options:
+    { ctx_size: 131072, ...(args === undefined ? {} : { llamacpp_args: args }) } }), '/props': 'throw' })
+    .contextWindow()).size;
+  assert.equal(await size('--jinja -np 2'), 65536);
+  assert.equal(await size('--parallel 4 --jinja'), 32768);
+  assert.equal(await size('--jinja'), 131072);
+  assert.equal(await size('--jinja -np 2 -fa on --cache-type-k q8_0 --cache-type-v q8_0'), 65536);
+  assert.equal(await size(undefined), 131072);
+  assert.equal(await size('-np x'), 131072);
+  const saved = windowClient({ '/health': NOT_LOADED, '/models/m%20a%2Fb':
+    { recipe_options: { ctx_size: 131072, llamacpp_args: '-np 2' } } });
+  assert.deepEqual(await saved.contextWindow(), { size: 65536, guess: false });
+});
+
+const windowReader = async (config, reads) => {
+  const { readWindow } = await import('./phases.mjs');
+  const warns = [];
+  const ctx = { config, job: { id: 'j' }, model: { contextWindow: async () => reads.shift() },
+    logs: { status: (fields) => { if (fields.event === 'warn') warns.push(fields); }, detail() {} } };
+  return { ctx, warns, read: () => readWindow(ctx, 'p') };
+};
+
+test('a sure size after a guess raises the window back', async () => {
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 128000, maxOutput: 500, reasoningOutput: 500 } });
+  const { ctx, read } = await windowReader(config,
+    [{ size: 32768, guess: true }, { size: 65536, guess: false }]);
+  await read();
+  assert.equal(ctx.window, 32768);
+  await read();
+  assert.equal(ctx.window, 65536);
+});
+
+test('a guess too small never fails a job, but a sure size that small does', async () => {
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 20000, maxOutput: 500, reasoningOutput: 500 } });
+  const { ctx, warns, read } = await windowReader(config,
+    [{ size: 7000, guess: false }, { size: 2800, guess: true }, { size: 2800, guess: true }]);
+  await read();
+  await read();
+  await read();
+  assert.equal(ctx.window, 7000);
+  assert.deepEqual(warns.map((w) => w.reason), ['server-window', 'server-window-unknown']);
+  const first = await windowReader(config, [{ size: 2800, guess: true }]);
+  await first.read();
+  assert.equal(first.ctx.window, 20000);
+  const sure = await windowReader(config, [{ size: 2800, guess: false }]);
+  await assert.rejects(sure.read(),
+    (error) => error instanceof ModelError && error.code === 'window-too-small');
+});
+
+test('a guess is logged only when it lowers the window, and carries the guess marker', async () => {
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 20000, maxOutput: 500, reasoningOutput: 500 } });
+  const same = await windowReader(config, [{ size: 9000, guess: false }, { size: 12000, guess: true }]);
+  await same.read();
+  await same.read();
+  assert.equal(same.warns.filter((w) => w.reason === 'server-window').length, 1);
+  assert.equal(same.warns[0].guess, undefined);
+  const lower = await windowReader(config, [{ size: 9000, guess: false }, { size: 8000, guess: true }]);
+  await lower.read();
+  await lower.read();
+  assert.equal(lower.ctx.window, 8000);
+  assert.equal(lower.warns[1].reason, 'server-window');
+  assert.equal(lower.warns[1].guess, true);
+});
+
+test('a loaded entry with no backend and no options reads no saved window', async () => {
+  const urls = [];
+  const client = windowClient({ '/health': { all_models_loaded: [{ model_name: 'm a/b' }] },
+    '/models/m%20a%2Fb': { recipe_options: { ctx_size: 128000 } } }, urls);
+  assert.equal(await client.contextWindow(), null);
+  assert.ok(!urls.some(({ url }) => url.includes('/models/')), 'the saved route was requested');
+});
+
+test('reading the context window calls only loopback addresses, and only with GET', async () => {
+  const urls = [];
+  await windowClient({ '/health': LOADED(), '/props': 'throw' }, urls).contextWindow();
+  await windowClient({ '/health': NOT_LOADED, '/models/m%20a%2Fb': {} }, urls).contextWindow();
+  assert.ok(urls.some(({ url }) => url.endsWith('/props')));
+  assert.ok(urls.some(({ url }) => url.endsWith('/models/m%20a%2Fb')));
+  for (const { url, method } of urls) {
+    assert.ok(/^http:\/\/(localhost:13305|127\.0\.0\.1:8001)\//.test(url), url);
+    assert.equal(method, 'GET');
+  }
+});
+
+test('a server window smaller than the config is the budget, and is warned about once', async () => {
+  const { ask } = await import('./phases.mjs');
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 20000, maxOutput: 500, reasoningOutput: 500 } });
+  const warns = [];
+  const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, job: { id: 'j' },
+    logs: { status: (fields) => { if (fields.event === 'warn') warns.push(fields); }, detail() {} },
+    model: { ...fakeModel(), contextWindow: async () => ({ size: 7000, guess: false }) } };
+  const options = { phase: 'phase1', step: 's', reasoning: false, inputs: [['Doc', 'x'.repeat(30000)]],
+    schema: { type: 'object' }, task: 't' };
+  // About 10,000 tokens: fits 20000, not 7000.
+  for (let i = 0; i < 2; i += 1) {
+    await assert.rejects(ask(ctx, options), (error) => error instanceof ModelError && error.code === 'too-big');
+  }
+  assert.deepEqual(warns.map(({ reason, context, serverContext }) => ({ reason, context, serverContext })),
+    [{ reason: 'server-window', context: 20000, serverContext: 7000 }]);
+});
+
+test('a server window with no room for a prompt fails the job', async () => {
+  const config = fixtureConfig();
+  const model = { ...fakeModel(), contextWindow: async () => ({ size: 1000, guess: false }) };
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'model:window-too-small');
+});
+
+test('an unreadable server window falls back to the config and is warned about once', async () => {
+  const config = fixtureConfig();
+  const model = { ...fakeModel(), contextWindow: async () => null };
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const warns = statusLines(result.outDir).filter((l) => l.reason === 'server-window-unknown');
+  assert.equal(warns.length, 1);
+});
+
+test('a server window just above the reply and reserve but with no input room fails the job', async () => {
+  // 2800 clears the reasoning reply, the 2048 reserve and the system text, with
+  // almost nothing left for a document.
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 20000, maxOutput: 500, reasoningOutput: 500 } });
+  const model = { ...fakeModel(), contextWindow: async () => ({ size: 2800, guess: false }) };
+  const { readWindow } = await import('./phases.mjs');
+  const ctx = { config, job: { id: 'j' }, model, logs: { status() {}, detail() {} } };
+  await assert.rejects(readWindow(ctx, 'intake'),
+    (error) => error instanceof ModelError && error.code === 'window-too-small');
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'model:window-too-small');
+});
+
+test('splitText with no token budget is a window-too-small error', () => {
+  for (const tokens of [0, -1, -500]) {
+    assert.throws(() => splitText('some text', tokens),
+      (error) => error instanceof ModelError && error.code === 'window-too-small');
+  }
+});
+
+test('an unreadable window after a known smaller one keeps the smaller one', async () => {
+  const { readWindow } = await import('./phases.mjs');
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 20000, maxOutput: 500, reasoningOutput: 500 } });
+  const sizes = [{ size: 7000, guess: false }, null, null];
+  const warns = [];
+  const ctx = { config, job: { id: 'j' }, model: { contextWindow: async () => sizes.shift() },
+    logs: { status: (fields) => { if (fields.event === 'warn') warns.push(fields.reason); }, detail() {} } };
+  await readWindow(ctx, 'phase1');
+  await readWindow(ctx, 'phase1');
+  await readWindow(ctx, 'phase1');
+  assert.equal(ctx.window, 7000);
+  assert.deepEqual(warns, ['server-window', 'server-window-unknown']);
+});
+
+test('the context window is read afresh on every call', async () => {
+  const routes = { '/health': LOADED({ recipe_options: { ctx_size: 65536 } }), '/props': 'throw' };
+  const client = windowClient(routes);
+  assert.deepEqual(await client.contextWindow(), { size: 65536, guess: false });
+  routes['/health'] = LOADED({ recipe_options: { ctx_size: 32768 } });
+  assert.deepEqual(await client.contextWindow(), { size: 32768, guess: false });
+});
+
+test('the loaded entry whose model_name matches is the one used', async () => {
+  const other = { model_name: 'other', backend_url: 'http://127.0.0.1:8002/v1',
+    recipe_options: { ctx_size: 1111 } };
+  const health = { all_models_loaded: [other, ...LOADED().all_models_loaded] };
+  assert.deepEqual(await windowClient({ '/health': health, '/props': 'throw' }).contextWindow(), { size: 65536, guess: false });
+  const reversed = { all_models_loaded: [...LOADED().all_models_loaded, other] };
+  assert.deepEqual(await windowClient({ '/health': reversed, '/props': 'throw' }).contextWindow(), { size: 65536, guess: false });
+});
+
+test('a loaded model with no readable size does not fall back to the saved options', async () => {
+  const urls = [];
+  const client = windowClient({ '/health': LOADED({ recipe_options: {} }), '/props': 'throw',
+    '/models/m%20a%2Fb': { recipe_options: { ctx_size: 128000 } } }, urls);
+  assert.equal(await client.contextWindow(), null);
+  assert.ok(!urls.some(({ url }) => url.endsWith('/models/m%20a%2Fb')));
+});
+
+test('the floor uses the larger reply, so a window only that floor rejects fails', async () => {
+  const { readWindow } = await import('./phases.mjs');
+  const accepts = async (cfg, size) => {
+    try {
+      await readWindow({ config: cfg, job: { id: 'j' }, model: { contextWindow: async () => ({ size, guess: false }) },
+        logs: { status() {}, detail() {} } }, 'p');
+      return true;
+    } catch (error) {
+      if (error instanceof ModelError && error.code === 'window-too-small') return false;
+      throw error;
+    }
+  };
+  const model = (maxOutput) => fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 20000, maxOutput, reasoningOutput: 500 } });
+  // The smallest window that leaves input room when the reasoning reply is the only reserve.
+  let least = 3000;
+  while (!await accepts(model(500), least)) least += 1;
+  // A larger plain reply raises the floor, so a window just above `least` is refused.
+  assert.equal(await accepts(model(3000), least + 100), false);
+  assert.equal(await accepts(model(3000), least + 3000), true);
+});
+
+test('room reserves the widest reply a thinking call may ask for, so a prompt sized to it passes ask', async () => {
+  const { ask, room } = await import('./phases.mjs');
+  const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
+    context: 60000, maxOutput: 16384, reasoningOutput: 8192 } });
+  const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, job: { id: 'j' },
+    logs: { status() {}, detail() {} },
+    model: { json: async () => ({ value: {}, usage: { promptTokens: 1, outputTokens: 1, ms: 1 } }),
+      // A prompt that uses all the room, plus the reference text already counted in it.
+      countTokens: async () => room(ctx, true, []) + 100 } };
+  assert.deepEqual(await ask(ctx, { phase: 'phase3', step: 's', reasoning: true, inputs: [],
+    schema: { type: 'object' }, task: 't' }), {});
+});
+
+test('a window that is zero, negative, fractional or text falls through to the next source', async () => {
+  for (const bad of [0, -4096, 4096.5, '4096']) {
+    const props = { default_generation_settings: { n_ctx: bad } };
+    assert.deepEqual(await windowClient({ '/health': LOADED(), '/props': props }).contextWindow(), { size: 65536, guess: false },
+      `props ${JSON.stringify(bad)}`);
+    const saved = windowClient({ '/health': LOADED({ recipe_options: { ctx_size: bad } }), '/props': props,
+      '/models/m%20a%2Fb': { recipe_options: { ctx_size: 49152 } } });
+    assert.equal(await saved.contextWindow(), null, `loaded ${JSON.stringify(bad)}`);
+    assert.equal(await windowClient({ '/health': NOT_LOADED,
+      '/models/m%20a%2Fb': { recipe_options: { ctx_size: bad } } }).contextWindow(), null);
+  }
+});
+
+const MEMINFO = (availableKiB, swapTotalKiB, swapFreeKiB) => `MemTotal:       65536000 kB
+MemAvailable:   ${availableKiB} kB
+SwapTotal:      ${swapTotalKiB} kB
+SwapFree:       ${swapFreeKiB} kB
+`;
+const LIMITS = { minAvailableMiB: 3072, maxSwapPercent: 85, pollSeconds: 30, waitMinutes: 20 };
+const reading = (availableMiB, swapPercent) => ({ availableMiB, swapPercent });
+
+test('meminfo gives available memory and swap use, and no swap is zero percent', () => {
+  assert.deepEqual(parseMeminfo(MEMINFO(4194304, 10485760, 2097152)),
+    { availableMiB: 4096, swapTotalMiB: 10240, swapUsedMiB: 8192, swapPercent: 80 });
+  assert.equal(parseMeminfo(MEMINFO(2048, 0, 0)).swapPercent, 0);
+  assert.equal(parseMeminfo('not meminfo'), null);
+});
+
+test('memory is low under the floor or over the swap ceiling, and not at either limit', () => {
+  assert.equal(memoryLow(reading(3071, 0), LIMITS), true);
+  assert.equal(memoryLow(reading(3072, 85), LIMITS), false);
+  // Full swap counts only while free memory is under twice the floor.
+  assert.equal(memoryLow(reading(5000, 86), LIMITS), true);
+  assert.equal(memoryLow(reading(6144, 99), LIMITS), false);
+  assert.equal(memoryLow(reading(5000, 100), { ...LIMITS, maxSwapPercent: 100 }), false);
+});
+
+test('waiting for memory polls until it recovers, gives up after the wait, and stops at once at 0 minutes', async () => {
+  let t = 0;
+  const clock = { now: () => t, sleep: async (ms) => { t += ms; } };
+  const run = (readings, limits = LIMITS) => {
+    const list = [...readings];
+    const waits = [];
+    return waitForMemory(limits, { ...clock, read: () => (list.length > 1 ? list.shift() : list[0]),
+      onWait: (m) => waits.push(m) }).then((outcome) => ({ outcome, waits }));
+  };
+  let { outcome, waits } = await run([reading(8000, 10)]);
+  assert.deepEqual([outcome.ok, outcome.polls, waits.length], [true, 0, 0]);
+  ({ outcome, waits } = await run([reading(1000, 10), reading(2000, 10), reading(5000, 10)]));
+  assert.deepEqual([outcome.ok, outcome.polls, waits.length], [true, 2, 1]);
+  t = 0;
+  ({ outcome } = await run([reading(1000, 90)]));
+  assert.deepEqual([outcome.ok, outcome.polls, outcome.waitedMs], [false, 40, 1200000]);
+  // A poll longer than the wait sleeps only the time left.
+  t = 0;
+  ({ outcome } = await run([reading(1000, 90)], { ...LIMITS, waitMinutes: 1, pollSeconds: 90 }));
+  assert.deepEqual([outcome.ok, outcome.waitedMs], [false, 60000]);
+  ({ outcome } = await run([reading(1000, 90)], { ...LIMITS, waitMinutes: 0 }));
+  assert.deepEqual([outcome.ok, outcome.polls], [false, 0]);
+  assert.equal((await waitForMemory(LIMITS, { read: () => null })).unreadable, true);
+});
+
+test('the memory block has defaults and rejects values it cannot use', () => {
+  const config = fixtureConfig({ memory: undefined });
+  assert.deepEqual(config.memory, { enabled: true, ...LIMITS });
+  for (const bad of ['text', [], { minAvailableMB: 6000 }]) {
+    assert.throws(() => fixtureConfig({ memory: bad }), /config memory must be an object/, JSON.stringify(bad));
+  }
+  for (const bad of [{ enabled: 'yes' }, { minAvailableMiB: 0 }, { minAvailableMiB: 1.5 },
+    { maxSwapPercent: 101 }, { pollSeconds: 0 }, { waitMinutes: -1 }, { waitMinutes: 1.5 }]) {
+    assert.throws(() => fixtureConfig({ memory: bad }), /config memory\./, JSON.stringify(bad));
+  }
+});
+
+test('low memory stops a job before a phase at its checkpoint, and a resume carries on from there', async () => {
+  const config = fixtureConfig({ memory: { enabled: true, waitMinutes: 1, pollSeconds: 30 } });
+  const job = { issue: '501', change: '7001' };
+  let low = false;
+  const model = fakeModel({ intake: (value) => ({ ...value, description: 'Card renewal sets the expiry from the old date' }) });
+  let t = Date.now();
+  const readMemory = () => (low ? parseMeminfo(MEMINFO(1048576, 10485760, 1048576))
+    : parseMeminfo(MEMINFO(8388608, 10485760, 9437184)));
+  // Memory drops once phase 2 has passed.
+  const result = await runJob(config, job, { model, echo: false, now: () => t,
+    readMemory: () => { if (statusSeen(config, job, 'phase2', 'pass')) low = true; return readMemory(); },
+    sleep: async (ms) => { t += ms; } });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'memory:low');
+  assert.equal(result.phase, 'phase3');
+  const checkpoint = JSON.parse(read(path.join(result.outDir, 'work', 'checkpoint.json')));
+  assert.equal(checkpoint.phase, 'phase2');
+  const lines = statusLines(result.outDir);
+  assert.ok(lines.some((l) => l.event === 'wait' && l.reason === 'memory-low' && l.availableMiB === 1024));
+  const last = lines.at(-1);
+  assert.deepEqual([last.event, last.reason, last.polls], ['fail', 'memory:low', 2]);
+  assertContentFree(read(path.join(result.outDir, 'status.log')));
+  low = false;
+  const again = await runJob(config, { ...job, resume: true }, { model, echo: false, readMemory });
+  assert.equal(again.ok, true);
+  assert.ok(statusLines(again.outDir).some((l) => l.event === 'resume' && l.after === 'phase2'));
+});
+
+/** A run that stops for low memory before intake passes, so it leaves no checkpoint. */
+async function stopBeforeIntake(config, job, model) {
+  let t = Date.now();
+  const result = await runJob(config, job, { model, echo: false, now: () => t,
+    readMemory: () => parseMeminfo(MEMINFO(1048576, 10485760, 1048576)),
+    sleep: async (ms) => { t += ms; } });
+  assert.equal(result.reason, 'memory:low');
+  assert.equal(result.phase, 'intake');
+  assert.equal(fs.existsSync(path.join(result.outDir, 'work', 'checkpoint.json')), false);
+  return result;
+}
+
+test('a resume after a low-memory stop before intake keeps the status log', async () => {
+  const config = fixtureConfig({ memory: { enabled: true, waitMinutes: 1, pollSeconds: 30 } });
+  const job = { issue: '501', change: '7001' };
+  const model = fakeModel({ intake: (value) => ({ ...value, description: 'Card renewal sets the expiry from the old date' }) });
+  const first = await stopBeforeIntake(config, job, model);
+  const before = statusLines(first.outDir);
+  assert.ok(before.some((l) => l.event === 'wait' && l.reason === 'memory-low'));
+  // The release line a finished job gets after the stop does not hide the stop.
+  jobLogs(first.outDir, { echo: false }).status({ job: first.id, phase: 'release', event: 'pass' });
+  const withRelease = statusLines(first.outDir);
+  const again = await runJob(config, { ...job, resume: true }, { model, echo: false,
+    readMemory: () => parseMeminfo(MEMINFO(8388608, 10485760, 9437184)) });
+  assert.equal(again.ok, true);
+  const lines = statusLines(again.outDir);
+  assert.deepEqual(lines.slice(0, withRelease.length), withRelease);
+  assert.ok(lines.length > withRelease.length);
+  assert.deepEqual([lines.at(-1).phase, lines.at(-1).event], ['done', 'pass']);
+  assertContentFree(read(path.join(again.outDir, 'status.log')));
+});
+
+test('a run started over for any other reason starts with an empty status log', async () => {
+  const config = fixtureConfig({ memory: { enabled: true, waitMinutes: 1, pollSeconds: 30 } });
+  const job = { issue: '501', change: '7001' };
+  const model = fakeModel({ intake: (value) => ({ ...value, description: 'Card renewal sets the expiry from the old date' }) });
+  const memory = () => parseMeminfo(MEMINFO(8388608, 10485760, 9437184));
+  // The same stop, run again without resume.
+  const first = await stopBeforeIntake(config, job, model);
+  const fresh = await runJob(config, job, { model, echo: false, readMemory: memory });
+  assert.equal(fresh.ok, true);
+  assert.equal(statusLines(fresh.outDir).some((l) => l.event === 'wait'), false);
+  // A resume with no checkpoint whose last stop was something else.
+  fs.rmSync(path.join(first.outDir, 'work', 'checkpoint.json'));
+  const log = jobLogs(first.outDir, { echo: false });
+  log.status({ job: first.id, phase: 'intake', event: 'fail', reason: 'gate:old-failure', ms: 1 });
+  const resumed = await runJob(config, { ...job, resume: true }, { model, echo: false, readMemory: memory });
+  assert.equal(resumed.ok, true);
+  assert.equal(statusLines(resumed.outDir).some((l) => l.reason === 'gate:old-failure'), false);
+});
+
+test('an unreadable /proc/meminfo is noted once and the job carries on', async () => {
+  const config = fixtureConfig({ memory: { enabled: true } });
+  const model = fakeModel({ intake: (value) => ({ ...value, description: 'Card renewal sets the expiry from the old date' }) });
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false, readMemory: () => null });
+  assert.equal(result.ok, true);
+  assert.equal(statusLines(result.outDir).filter((l) => l.reason === 'meminfo-unreadable').length, 1);
+});
+
+test('a stop for low memory is not one of the job\'s tries, and the drain stops after it', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501', now: true });
+  addJob(config, { issue: '777', now: true });
+  const ran = [];
+  const run = async (_config, job) => {
+    ran.push(job.id);
+    return { ok: false, phase: 'phase3', reason: 'memory:low', ms: 1000 };
+  };
+  const night = (day) => () => new Date(`2026-10-${day}T22:00:00`);
+  for (const day of [27, 28]) await drainQueue(config, { cutoff: '07:00', run, clock: night(day) });
+  // Two stops, one job each night: neither drops anything, and the second job never runs.
+  assert.deepEqual(ran, ['issue-501', 'issue-501']);
+  const rows = readQueue(config).jobs;
+  assert.deepEqual(rows.map((r) => r.status), ['queued', 'queued']);
+  assert.equal(rows[0].failures.length, 2);
+  assert.equal(countedTries(rows[0].failures), 0);
+  assert.equal(countedTries([...rows[0].failures, { reason: 'model:no-reply' }]), 1);
+  assert.match(summaryLines(readQueue(config))[0], /retry after stopping at phase3 \(memory:low\)/);
+});
+
+test('the third low-memory stop in a row drops the job, and the next job runs the night after', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501', now: true });
+  addJob(config, { issue: '777', now: true });
+  const ran = [];
+  const run = async (_config, job) => {
+    ran.push(job.id);
+    return { ok: false, phase: 'phase3', reason: 'memory:low', ms: 1000 };
+  };
+  const night = (day) => () => new Date(`2026-10-${day}T22:00:00`);
+  for (const day of [27, 28, 29, 30]) await drainQueue(config, { cutoff: '07:00', run, clock: night(day) });
+  assert.deepEqual(ran, ['issue-501', 'issue-501', 'issue-501', 'issue-777']);
+  const rows = readQueue(config).jobs;
+  assert.deepEqual(rows.map((r) => r.status), ['failed', 'queued']);
+  assert.equal(rows[0].reason, 'memory:low');
+  assert.equal(memoryStops(rows[0].failures), MAX_MEMORY_STOPS);
+  assert.match(summaryLines(readQueue(config))[0], /dropped after 3 low-memory stops in a row/);
+  // A person puts it back with queue add, which starts it with no failures.
+  addJob(config, { issue: '501', now: true });
+  const again = readQueue(config).jobs.filter((r) => r.id === 'issue-501');
+  assert.deepEqual(again.map((r) => r.status), ['failed', 'queued']);
+  assert.equal(again[1].failures, undefined);
+});
+
+test('a failure of another kind between low-memory stops resets the count', () => {
+  const stop = { reason: 'memory:low' };
+  assert.equal(memoryStops([stop, stop, { reason: 'model:no-reply' }, stop]), 1);
+  assert.equal(memoryStops([{ reason: 'model:no-reply' }, stop, stop]), 2);
+  assert.equal(memoryStops([]), 0);
+  assert.equal(memoryStops(undefined), 0);
+});
+
+test('the report shows a job held by repeated low-memory stops as needing a person', () => {
+  const config = fixtureConfig();
+  const queue = reportQueue(config);
+  const stops = (n) => Array.from({ length: n }, (_, i) => ({ at: hoursAgo(5 - i), phase: 'phase3', reason: 'memory:low', ms: 1 }));
+  queue.jobs.push({ id: 'issue-910', status: 'failed', finished: hoursAgo(2), phase: 'phase3',
+    reason: 'memory:low', failures: stops(3) });
+  queue.jobs.push({ id: 'issue-920', status: 'queued', failures: stops(1) });
+  const data = reportData(config, queue, { period: 'day', now: NOW, random: seededRandom(1) });
+  const state = (id) => data.jobs.find((j) => j.id === id)?.state;
+  assert.equal(state('issue-910'), 'MEMORY');
+  assert.equal(state('issue-920'), 'RETRY');
+  assert.equal(data.counts.memory, 1);
+  const text = renderReport(data);
+  assert.match(text, /Stopped 3 times in a row for low memory and dropped from the queue: 1/);
+  assert.match(text, /issue-910: stopped for low memory 3 times in a row, last at phase3\. Dropped from the queue; it needs a person/);
+});
+
+/** A pauser and a releaser that only count their calls. */
+function countingHooks() {
+  const calls = { resume: 0, release: 0, noted: [] };
+  return {
+    calls,
+    pause: () => ({ pause: async () => {}, resume: async () => { calls.resume += 1; } }),
+    release: () => ({ note: (id) => calls.noted.push(id), release: () => { calls.release += 1; } }),
+  };
+}
+
+test('a run stopped on request marks its row stopped at the phase, counts no try, and ends the run', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501' });
+  addJob(config, { issue: '777' });
+  const hooks = countingHooks();
+  const stop = new AbortController();
+  const ran = [];
+  const run = async (_config, job, { signal }) => {
+    ran.push(job.id);
+    assert.equal(signal, stop.signal);
+    stop.abort();
+    return { ok: false, phase: 'phase4', reason: 'cancelled', ms: 5 };
+  };
+  const done = await drainQueue(config, { cutoff: '07:00', run, ...hooks, signal: stop.signal,
+    clock: () => new Date('2026-10-28T10:00:00') });
+  // The second row waits for the next run, and the units and the model are handled once.
+  assert.deepEqual(ran, ['issue-501']);
+  assert.equal(done.length, 1);
+  assert.deepEqual([hooks.calls.resume, hooks.calls.release, hooks.calls.noted], [1, 1, ['issue-501']]);
+  const [first, second] = readQueue(config).jobs;
+  assert.deepEqual([first.status, first.phase, first.reason, first.resume], ['stopped', 'phase4', 'cancelled', true]);
+  assert.equal(first.failures, undefined);
+  assert.equal(second.status, 'queued');
+  assert.match(summaryLines(readQueue(config))[0], /stopped at phase4 \(cancelled\), resumable/);
+  assert.match(queueLines(readQueue(config))[0], /status=stopped phase=phase4 reason=cancelled/);
+  assert.equal(lockHeld(config), false);
+  // `queue add --resume --now` queues the job again, and the row's checkpoint is what it resumes from.
+  assert.equal(addJob(config, { issue: '501', resume: true, now: true }).added, true);
+  const rows = readQueue(config).jobs;
+  assert.deepEqual(rows.map((r) => r.status), ['stopped', 'queued', 'queued']);
+  assert.deepEqual([rows[2].resume, rows[2].now], [true, true]);
+});
+
+test('a stop that arrives while the units are being stopped starts no job', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501' });
+  const stop = new AbortController();
+  const pause = () => ({ pause: async ({ signal }) => { stop.abort(); assert.equal(signal.aborted, true); },
+    resume: async () => {} });
+  const run = async () => { throw new Error('no job should start'); };
+  const done = await drainQueue(config, { cutoff: '07:00', run, pause, signal: stop.signal,
+    clock: () => new Date('2026-10-28T10:00:00') });
+  assert.deepEqual(done, []);
+  assert.equal(readQueue(config).jobs[0].status, 'queued');
+});
+
+test('a pauser wait ends at once when the stop signal aborts', async () => {
+  const stop = new AbortController();
+  const lines = [];
+  const config = fixtureConfig({ pause: { units: ['x.service'], scope: 'user', busyProcess: 'worker',
+    pollSeconds: 3600, maxWaitMinutes: 60 } });
+  const exec = (command, args) => (args.includes('list-units')
+    ? { status: 0, stdout: 'x.service loaded active running\n' } : { status: 0, stdout: '' });
+  // A unit with a busy worker inside it is waited for.
+  const proc = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-'));
+  fs.mkdirSync(path.join(proc, '42'));
+  fs.writeFileSync(path.join(proc, '42', 'comm'), 'worker\n');
+  fs.writeFileSync(path.join(proc, '42', 'cgroup'), '0::/system.slice/x.service\n');
+  const busy = createPauser(config, { exec, log: (l) => lines.push(l), sleep: () => new Promise(() => {}),
+    procRoot: proc });
+  const waiting = busy.pause({ signal: stop.signal });
+  setTimeout(() => stop.abort(), 20);
+  await waiting;
+  assert.ok(lines.includes('pause: waiting for x.service'));
+});
+
+test('a model call in flight ends as Cancelled when the signal aborts, and the server sees it close', async () => {
+  let closed;
+  const seen = new Promise((resolve) => { closed = resolve; });
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.on('close', closed);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const stop = new AbortController();
+    const client = modelClient({ endpoint: `http://127.0.0.1:${server.address().port}/v1`, name: 'm',
+      signal: stop.signal });
+    const call = client.json({ system: 's', user: 'u', schema: { type: 'object' }, schemaName: 'n',
+      reasoning: false, maxTokens: 10 });
+    setTimeout(() => stop.abort(), 50);
+    await assert.rejects(call, (error) => error instanceof Cancelled && !(error instanceof ModelError));
+    await seen;
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test('a job stopped during a model call keeps its checkpoint, retries nothing, and resumes at the phase', async () => {
+  const config = fixtureConfig();
+  const job = { issue: '501', change: '7001' };
+  const stop = new AbortController();
+  const base = fakeModel({ intake: (value) => ({ ...value, description: 'Card renewal sets the expiry from the old date' }) });
+  const model = {
+    ...base,
+    async json(request) {
+      if (request.schemaName.startsWith('phase3')) {
+        stop.abort();
+        throw new Cancelled();
+      }
+      return base.json(request);
+    },
+  };
+  const result = await runJob(config, job, { model, echo: false, signal: stop.signal });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'cancelled');
+  assert.equal(result.phase, 'phase3');
+  const checkpoint = JSON.parse(read(path.join(result.outDir, 'work', 'checkpoint.json')));
+  assert.equal(checkpoint.phase, 'phase2');
+  const lines = statusLines(result.outDir);
+  assert.ok(!lines.some((l) => ['retry', 'call-fail'].includes(l.event)));
+  assert.equal(lines.at(-1).reason, 'cancelled');
+  assertContentFree(read(path.join(result.outDir, 'status.log')));
+  const again = await runJob(config, { ...job, resume: true }, { model: base, echo: false });
+  assert.equal(again.ok, true);
+  assert.ok(statusLines(again.outDir).some((l) => l.event === 'resume' && l.after === 'phase2'));
+});
+
+test('an aborted signal stops a job between phases, at the next phase', async () => {
+  const config = fixtureConfig();
+  const stop = new AbortController();
+  const model = fakeModel({ intake: (value) => ({ ...value, description: 'Card renewal sets the expiry from the old date' }) });
+  stop.abort();
+  const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false, signal: stop.signal });
+  assert.deepEqual([result.ok, result.reason, result.phase], [false, 'cancelled', 'intake']);
+  assert.equal(model.calls.length, 0);
+});
+
+test('cancel settles a row a stopped run left running, restarts the units and unloads the model', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501' });
+  const queue = readQueue(config);
+  Object.assign(queue.jobs[0], { status: 'running', started: '2026-10-28T10:00:00.000Z' });
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify(queue));
+  const dir = path.join(config.output, 'issue-501');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'status.log'), [
+    { at: '2026-10-28T10:01:00.000Z', job: 'issue-501', phase: 'phase2', event: 'pass', ms: 5 },
+    { at: '2026-10-28T10:02:00.000Z', job: 'issue-501', phase: 'phase3', event: 'start' },
+  ].map((l) => JSON.stringify(l)).join('\n') + '\n');
+  const hooks = countingHooks();
+  const result = await cancelJob(config, 'issue-501', hooks);
+  assert.deepEqual(result, { id: 'issue-501', cancelled: true, phase: 'phase3' });
+  assert.deepEqual([hooks.calls.resume, hooks.calls.release], [1, 1]);
+  assert.deepEqual(jobStatus(config, 'issue-501').slice(0, 1), ['issue-501  stopped  queue free']);
+  // A job that is not running, or not in the queue, is not cancelled.
+  assert.deepEqual(await cancelJob(config, 'issue-501', hooks), { id: 'issue-501', cancelled: false, status: 'stopped' });
+  assert.equal((await cancelJob(config, 'issue-9', hooks)).status, 'not queued');
+});
+
+test('cancel gives up and says so when the holder keeps the queue', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501' });
+  const queue = readQueue(config);
+  queue.jobs[0].status = 'running';
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify(queue));
+  fs.writeFileSync(`${config.at(config.queue.file)}.lock`, String(process.pid));
+  const sent = [];
+  let t = 0;
+  const result = await cancelJob(config, 'issue-501', { kill: (pid, name) => sent.push([pid, name]),
+    clock: () => new Date(t), sleep: async (ms) => { t += ms; }, waitMs: 5000, pollMs: 1000 });
+  assert.deepEqual(result, { id: 'issue-501', cancelled: false, timedOut: true });
+  assert.deepEqual(sent, [[process.pid, 'SIGTERM']]);
+});
+
+test('queue cancel stops a real run during a model call, frees the queue, and leaves a resumable row', async () => {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    if (req.url.endsWith('/chat/completions')) {
+      requests.push(req.url);
+      req.resume();
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const marker = path.join(os.tmpdir(), `released-${process.pid}-${Date.now()}`);
+  try {
+    const config = fixtureConfig({
+      model: { endpoint: `http://127.0.0.1:${server.address().port}/api/v1`, name: 'test-model' },
+      release: { command: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`] },
+    });
+    const script = path.join(HERE, 'build-pack.mjs');
+    const cli = (...args) => spawnSync(process.execPath, [script, 'queue', ...args, '--config', config.file],
+      { encoding: 'utf8' });
+    assert.equal(cli('add', '--issue', '501', '--change', '7001', '--now').status, 0);
+    const child = spawn(process.execPath, [script, 'queue', 'start', '--config', config.file,
+      '--job', 'issue-501-change-7001'], { stdio: 'ignore' });
+    const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })));
+    for (let i = 0; i < 200 && !requests.length; i += 1) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(requests.length, 'the run reached its first model call');
+    assert.deepEqual(cli('status', '--job', 'issue-501-change-7001').stdout.split('\n')[0],
+      'issue-501-change-7001  running  queue held');
+    const cancelled = cli('cancel', '--job', 'issue-501-change-7001');
+    assert.equal(cancelled.status, 0, cancelled.stderr);
+    assert.match(cancelled.stdout, /^cancelled issue-501-change-7001$/m);
+    assert.match(cancelled.stdout, /^issue-501-change-7001  stopped  queue free$/m);
+    assert.match(cancelled.stdout, /^stopped phase=intake reason=cancelled$/m);
+    const { code } = await exited;
+    assert.equal(code, 0);
+    assert.equal(fs.existsSync(marker), true, 'the model was released');
+    const row = readQueue(config).jobs[0];
+    assert.deepEqual([row.status, row.phase, row.resume, row.failures], ['stopped', 'intake', true, undefined]);
+    assert.equal(lockHeld(config), false);
+    const again = cli('cancel', '--job', 'issue-501-change-7001');
+    assert.equal(again.status, 1);
+    assert.match(again.stderr, /is not running \(stopped\)/);
+    assert.equal(cli('add', '--issue', '501', '--change', '7001', '--resume', '--now').status, 0);
+    assert.equal(readQueue(config).jobs.at(-1).status, 'queued');
+  } finally {
+    fs.rmSync(marker, { force: true });
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test('waiting on a stop signal leaves no listener behind, and an aborted signal ends the wait', async () => {
+  const stop = new AbortController();
+  for (let i = 0; i < 30; i += 1) await sleepUnlessAborted(async () => {}, 1, stop.signal);
+  // Each wait removes its own listener, so none pile up on the signal.
+  assert.equal(getEventListeners(stop.signal, 'abort').length, 0);
+  const waiting = sleepUnlessAborted(() => new Promise(() => {}), 1e9, stop.signal);
+  stop.abort();
+  await waiting;
+  assert.equal(await sleepUnlessAborted(() => new Promise(() => {}), 1e9, stop.signal), undefined);
+});
+
+test('a stop while a run waits for the queue ends the wait without taking a job', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501' });
+  fs.writeFileSync(`${config.at(config.queue.file)}.lock`, String(process.pid));
+  const stop = new AbortController();
+  let slept = 0;
+  const sleep = async () => { slept += 1; if (slept === 2) stop.abort(); };
+  const run = async () => { throw new Error('no job should start'); };
+  const done = await drainQueue(config, { cutoff: '07:00', wait: true, run, sleep, signal: stop.signal,
+    clock: () => new Date('2026-10-28T10:00:00') });
+  assert.deepEqual(done, []);
+  assert.equal(readQueue(config).jobs[0].status, 'queued');
+});
+
+test('a stop during the low-memory wait stops the job at its checkpoint as cancelled', async () => {
+  const config = fixtureConfig({ memory: { enabled: true, waitMinutes: 20, pollSeconds: 30 } });
+  const job = { issue: '501', change: '7001' };
+  const stop = new AbortController();
+  const model = fakeModel({ intake: (value) => ({ ...value, description: 'Card renewal sets the expiry from the old date' }) });
+  const low = parseMeminfo(MEMINFO(1048576, 10485760, 1048576));
+  const result = await runJob(config, job, { model, echo: false, signal: stop.signal, readMemory: () => low,
+    sleep: async () => { stop.abort(); } });
+  assert.deepEqual([result.ok, result.reason, result.phase], [false, 'cancelled', 'intake']);
+  assert.equal(model.calls.length, 0);
+});
+
+test('the report counts a stopped job apart from failures', () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '501' });
+  const queue = readQueue(config);
+  Object.assign(queue.jobs[0], { status: 'stopped', phase: 'phase3', reason: 'cancelled', resume: true,
+    finished: '2026-10-28T10:00:00.000Z', ms: 5 });
+  const data = reportData(config, queue, { now: new Date('2026-10-28T12:00:00.000Z') });
+  assert.equal(data.counts.stopped, 1);
+  assert.equal(data.counts.fail + data.counts.dropped + data.counts.retry, 0);
+  assert.equal(data.failing.length, 0);
+  assert.match(renderReport(data), /Stopped on request and waiting to resume: 1/);
+});
+
+const APP_SCOPES = ['app-com.google.Chrome-*.scope', 'snap.spotify.spotify-*.scope'];
+const closeConfig = (closeApps = {}) => fixtureConfig({ closeApps: { scopes: APP_SCOPES, keepIfRunning: ['sessiond'], ...closeApps } });
+
+/** A closer over a fake systemctl and /proc; `lines` records its log. */
+function fakeCloser(active, { failing = [], procs = [], selfCgroup = '0::/user.slice/other.scope\n' } = {}) {
+  const sys = fakeSystemctl(active, failing);
+  const lines = [];
+  const make = (cfg) => createAppCloser(cfg, { exec: sys.exec, log: (l) => lines.push(l),
+    procRoot: fakeProc(procs), selfCgroup });
+  return { sys, lines, make };
+}
+
+test('apps are off unless the config lists scopes', () => {
+  const fake = fakeCloser(['app-com.google.Chrome-1.scope']);
+  fake.make(fixtureConfig()).close();
+  assert.deepEqual(fake.sys.calls, []);
+});
+
+test('active app scopes are stopped for the user, once, and never started again', () => {
+  const fake = fakeCloser(['app-com.google.Chrome-1.scope', 'snap.spotify.spotify-2.scope']);
+  const closer = fake.make(closeConfig());
+  closer.close();
+  closer.close();
+  assert.deepEqual(fake.sys.calls[0].slice(0, 3), ['systemctl', '--user', 'list-units']);
+  assert.deepEqual(fake.sys.verbs(), [
+    ['systemctl', '--user', 'stop', 'app-com.google.Chrome-1.scope'],
+    ['systemctl', '--user', 'stop', 'snap.spotify.spotify-2.scope']]);
+  assert.deepEqual(fake.lines, ['close: closed app-com.google.Chrome-1.scope',
+    'close: closed snap.spotify.spotify-2.scope']);
+});
+
+test('a scope with a kept process or this process in it is left open and sessions are counted', () => {
+  const chrome = 'app-com.google.Chrome-1.scope';
+  const desktop = 'app-com.example.Editor-3.scope';
+  const fake = fakeCloser([chrome, desktop, 'snap.spotify.spotify-2.scope'], {
+    procs: [[10, 'sessiond', `/user.slice/${desktop}`], [11, 'sessiond', '/user.slice/term.scope'],
+      [12, 'chrome', `/user.slice/${chrome}`]],
+    selfCgroup: '0::/user.slice/snap.spotify.spotify-2.scope\n' });
+  fake.make(closeConfig({ scopes: ['app-com.*.scope', ...APP_SCOPES] })).close();
+  assert.deepEqual(fake.sys.verbs(), [['systemctl', '--user', 'stop', chrome]]);
+  assert.deepEqual(fake.lines, [`close: closed ${chrome}`, `close: left open ${desktop}`,
+    'close: left open snap.spotify.spotify-2.scope', 'close: sessiond processes open 2']);
+});
+
+test("an app's helper scope stays open with the scope that holds a kept process", () => {
+  const main = 'app-com.example.Editor-7.scope';
+  const helper = 'app-gnome-com.example.Editor-7.scope';
+  const other = 'app-gnome-other-8.scope';
+  const sameAppOtherPid = 'app-gnome-com.example.Editor-8.scope';
+  const fake = fakeCloser([main, helper, other, sameAppOtherPid], { procs: [[10, 'sessiond', `/user.slice/${main}`]] });
+  fake.make(closeConfig({ scopes: ['app-com.example.*.scope', 'app-gnome-*.scope'] })).close();
+  assert.deepEqual(fake.sys.verbs(), [['systemctl', '--user', 'stop', other],
+    ['systemctl', '--user', 'stop', sameAppOtherPid]]);
+  assert.deepEqual(fake.lines.slice(0, 2), [`close: left open ${main}`, `close: left open ${helper}`]);
+});
+
+test('every close log line carries only a fixed word, a scope or process name and a count', () => {
+  const scope = 'app-com.google.Chrome-1.scope';
+  const fake = fakeCloser([scope, 'snap.spotify.spotify-2.scope'], { failing: [`stop ${scope}`],
+    procs: [[10, 'sessiond', '/user.slice/x.scope']] });
+  fake.make(closeConfig()).close();
+  assert.ok(fake.lines.length >= 3);
+  for (const line of fake.lines) {
+    assert.match(line, /^close: (closed|left open|stop failed) \S+\.scope$|^close: sessiond processes open \d+$/, line);
+  }
+});
+
+test('keepIfRunning can be emptied to close the scope that holds sessions', () => {
+  const desktop = 'app-com.example.Editor-3.scope';
+  const fake = fakeCloser([desktop], { procs: [[10, 'sessiond', `/user.slice/${desktop}`]] });
+  fake.make(closeConfig({ scopes: ['app-com.example.Editor-*.scope'], keepIfRunning: [] })).close();
+  assert.deepEqual(fake.sys.verbs(), [['systemctl', '--user', 'stop', desktop]]);
+});
+
+test('a failed stop or list is logged and nothing throws', () => {
+  const scope = 'app-com.google.Chrome-1.scope';
+  const failing = fakeCloser([scope], { failing: [`stop ${scope}`] });
+  failing.make(closeConfig()).close();
+  assert.deepEqual(failing.lines, [`close: stop failed ${scope}`]);
+  const lines = [];
+  createAppCloser(closeConfig(), { exec: () => ({ status: 1, stdout: '' }), log: (l) => lines.push(l),
+    procRoot: fakeProc([]), selfCgroup: '' }).close();
+  assert.deepEqual(lines, ['close: list failed']);
+});
+
+test('a name that is not a plain scope name is never passed to systemctl', () => {
+  const fake = fakeCloser(['evil.service', '-rf.scope', 'app-ok.scope']);
+  fake.make(closeConfig({ scopes: ['app-ok*.scope'] })).close();
+  assert.deepEqual(fake.sys.verbs(), [['systemctl', '--user', 'stop', 'app-ok.scope']]);
+});
+
+test('a queue run closes apps once, before the first job and before units stop', async () => {
+  const config = closeConfig();
+  addJob(config, { issue: '1' });
+  addJob(config, { issue: '2' });
+  const events = [];
+  const closer = { close: () => events.push('close') };
+  const pause = () => ({ pause: async () => { events.push('pause'); }, resume: async () => {} });
+  const run = async (cfg, job) => { events.push(`run ${job.id}`); return { ok: true, ms: 1 }; };
+  await drainQueue(config, { run, pause, closeApps: () => closer });
+  assert.deepEqual(events.map((e) => e.split(' ')[0]), ['close', 'pause', 'run', 'pause', 'run']);
+});
+
+test('an empty queue closes nothing', async () => {
+  const closer = { close: () => assert.fail('closed') };
+  await drainQueue(closeConfig(), { run: okRun, closeApps: () => closer });
+});
+
+test('a job started now leaves apps open unless onNow is set', async () => {
+  for (const [onNow, expected] of [[false, 0], [true, 1]]) {
+    const config = closeConfig({ onNow });
+    addJob(config, { issue: '5', now: true });
+    let closed = 0;
+    await drainQueue(config, { nowOnly: true, run: okRun, closeApps: () => ({ close: () => { closed += 1; } }) });
+    assert.equal(closed, expected, `onNow ${onNow}`);
+  }
+});
+
+test('closeApps config is checked', () => {
+  assert.deepEqual(fixtureConfig().closeApps, { scopes: [], onNow: false, keepIfRunning: ['claude'] });
+  for (const bad of [[], 'x', { other: 1 }]) {
+    assert.throws(() => fixtureConfig({ closeApps: bad }), /config closeApps must be an object/, JSON.stringify(bad));
+  }
+  for (const scopes of [['foo.service'], ['app-*.scope'], ['snap.*.scope'], ['app-x.slice'], 'app-x.scope', [3]]) {
+    assert.throws(() => fixtureConfig({ closeApps: { scopes } }), /config closeApps\.scopes/, JSON.stringify(scopes));
+  }
+  assert.throws(() => fixtureConfig({ closeApps: { onNow: 'yes' } }), /closeApps\.onNow/);
+  assert.throws(() => fixtureConfig({ closeApps: { keepIfRunning: [''] } }), /closeApps\.keepIfRunning/);
+  assert.throws(() => fixtureConfig({ closeApps: { keepIfRunning: ['sixteen-chars-xxx'] } }),
+    /up to 15 characters/);
+});
+
+const gateStop = (reason, counts) => async (_config, job) => ({ ok: false, id: job.id, phase: 'phase2', reason, ms: 1, counts });
+
+test('queue status shows the count and numbers of a Phase 2 stop', async () => {
+  const config = fixtureConfig();
+  addJob(config, issueJob(['docs/OTHER/UC09-Unmapped.md']));
+  const run = (cfg, job) => runJob(cfg, job, { model: fakeModel(), echo: false });
+  await drainQueue(config, { cutoff: '07:00', run, clock: () => new Date('2026-11-01T08:00:00') });
+  const lines = jobStatus(config, 'issue-501-change-7001');
+  assert.ok(lines.includes('stopped phase=phase2 reason=gate:rules-not-extracted documents=1 numbers=1'), lines.join('\n'));
+  assertContentFree(lines.join('\n'));
+});
+
+test('a row with no stored stop fields shows them from its last fail line', () => {
+  const config = fixtureConfig();
+  seedJob(config, { status: 'stopped', resume: true, phase: 'phase2', reason: 'gate:rules-not-extracted',
+    added: '2026-11-01T08:00:00.000Z' }, [
+    logLine('2026-11-01T08:00:01.000Z', { phase: 'phase2', event: 'fail', reason: 'gate:rules-not-extracted',
+      documents: 2, numbers: '1 3' })]);
+  assert.ok(jobStatus(config, 'issue-9415').includes(
+    'stopped phase=phase2 reason=gate:rules-not-extracted documents=2 numbers=1 3'));
+});
+
+test('a stop no retry can change waits for a person; an outage is still retried', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '1' });
+  addJob(config, { issue: '2' });
+  const clock = () => new Date('2026-11-01T08:00:00');
+  const run = async (cfg, job) => (job.issue === '1'
+    ? gateStop('gate:rules-not-extracted', { documents: 1, numbers: '1' })(cfg, job)
+    : gateStop('gate:rule-export-failed', { documents: 1, numbers: '1' })(cfg, job));
+  await drainQueue(config, { cutoff: '07:00', run, clock });
+  let rows = readQueue(config).jobs;
+  assert.equal(rows[0].status, 'stopped');
+  assert.equal(rows[0].resume, true);
+  assert.equal(countedTries(rows[0].failures), 1);
+  assert.equal(rows[1].status, 'queued');
+  // The stopped row is not taken again, and the summary says who it waits for.
+  const ran = [];
+  await drainQueue(config, { cutoff: '07:00', run: async (cfg, job) => { ran.push(job.id); return run(cfg, job); }, clock });
+  assert.deepEqual(ran, ['issue-2']);
+  assert.match(summaryLines(readQueue(config))[0],
+    /stopped at phase2 \(gate:rules-not-extracted\), waits for a person, resumable, documents 1 \(1\)/);
+  // A person fixes the rules and adds it again with --resume: a fresh queued row.
+  assert.equal(addJob(config, { issue: '1', resume: true }).added, true);
+  rows = readQueue(config).jobs;
+  assert.equal(rows.findLast((row) => row.id === 'issue-1').status, 'queued');
+});
+
+test('the report counts a held row apart from a stop on request', () => {
+  const config = fixtureConfig();
+  const at = '2026-11-01T08:00:00.000Z';
+  const queue = { jobs: [{ id: 'issue-1', status: 'stopped', resume: true, phase: 'phase2',
+    reason: 'gate:rules-not-extracted', finished: at, failures: [{ at, phase: 'phase2', reason: 'gate:rules-not-extracted', ms: 1 }] }] };
+  const text = renderReport(reportData(config, queue, { period: 'day', now: new Date('2026-11-01T09:00:00.000Z') }));
+  assert.match(text, /Stopped on a gate a retry cannot change, waiting for a person: 1/);
+  assert.match(text, /queue add --resume/);
+});
+
+test('every stop in HOLD_REASONS leaves the row stopped for a person', async () => {
+  for (const reason of HOLD_REASONS) {
+    const config = fixtureConfig();
+    addJob(config, { issue: '3' });
+    await drainQueue(config, { cutoff: '07:00', clock: () => new Date('2026-11-01T08:00:00'),
+      run: gateStop(reason, { documents: 1, numbers: '2' }) });
+    const [row] = readQueue(config).jobs;
+    assert.equal(row.status, 'stopped', reason);
+    assert.equal(row.reason, reason);
+    assert.equal(row.numbers, '2');
+  }
+  assert.deepEqual(HOLD_REASONS, ['gate:rules-not-extracted', 'gate:rules-malformed', 'gate:document-file',
+    'gate:duplicate-rule-wording', 'gate:rule-conflict', 'gate:needs-user-review']);
+});
+
+test('check without a document or checkpoint writes nothing under the output folder', () => {
+  const config = fixtureConfig();
+  checkJob(config, { issue: '501', change: '7001', resume: true });
+  assert.ok(!fs.existsSync(path.join(config.output, 'issue-501-change-7001.check')));
+});
+
+test('a row held on a gate is not reported as cancelled', async () => {
+  const config = fixtureConfig();
+  addJob(config, { issue: '4' });
+  await drainQueue(config, { cutoff: '07:00', clock: () => new Date('2026-11-01T08:00:00'),
+    run: gateStop('gate:rules-not-extracted', { documents: 1, numbers: '1' }) });
+  const result = await cancelJob(config, 'issue-4');
+  assert.equal(result.cancelled, false);
+  assert.equal(result.status, 'stopped');
+});
+
+/** The first call a run made to one phase step, by schema name. */
+const callOf = (run, schemaName) => run.model.calls.find((c) => c.schemaName === schemaName);
+/** Everything a call sent the model. */
+const sent = (call) => `${call.system}\n${call.user}`;
+
+test('the operating manual reaches the card and set calls and no other phase', async () => {
+  const run = lib();
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const manual = /Rule 6: prefer reusing an existing test/;
+  assert.match(callOf(run, 'phase6_cards_d1_1').system, manual);
+  assert.match(callOf(run, 'phase7_sets').system, manual);
+  assert.doesNotMatch(callOf(run, 'phase6_scenarios_d1').system, manual);
+  assert.ok(run.model.calls.filter((c) => c.schemaName.startsWith('phase9'))
+    .every((c) => !manual.test(c.system)));
+});
+
+test('a config without an operating manual builds prompts without one', async () => {
+  const raw = JSON.parse(read(path.join(FIXTURES, 'pipeline.json')));
+  const { operatingManual, ...reference } = raw.reference;
+  assert.ok(operatingManual);
+  const run = lib({}, { reference });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.ok(run.model.calls.every((c) => !/Rule 6/.test(c.system)));
+});
+
+test('Phase 7 reads its methodology chapters and Phase 6 keeps its own', async () => {
+  const run = lib();
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const sets = callOf(run, 'phase7_sets').system;
+  assert.match(sets, /Synthetic chapter 11/);
+  assert.match(sets, /Synthetic chapter 12/);
+  assert.doesNotMatch(sets, /Synthetic chapter 4/);
+  const cards = callOf(run, 'phase6_cards_d1_1').system;
+  assert.match(cards, /Synthetic chapter 4/);
+  assert.doesNotMatch(cards, /Synthetic chapter 11/);
+});
+
+test('existing tests reach the card calls and the set call, not the scenario inventory', async () => {
+  const name = `existing-tests-${process.pid}.md`;
+  fs.writeFileSync(path.join(FIXTURES, name), 'An existing test of the renewal screen.');
+  try {
+    const inputs = { ...fixtureInputs(), existingTests: name };
+    const run = lib({}, { inputs });
+    const result = await runLib(run);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.match(callOf(run, 'phase6_cards_d1_1').user, /Existing tests\s+An existing test/);
+    assert.match(callOf(run, 'phase7_sets').user, /Existing tests\s+An existing test/);
+    assert.doesNotMatch(callOf(run, 'phase6_scenarios_d1').user, /An existing test/);
+    const suite = lib({}, { inputs });
+    const suiteResult = await runJob(suite.config, { suite: 'LIB' }, { model: suite.model, echo: false });
+    assert.equal(suiteResult.ok, true, JSON.stringify(suiteResult));
+    assert.match(callOf(suite, 'phase7_sets').user, /Existing tests\s+An existing test/);
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+test('Phase 7 asks for the regression execution scope and the BREAK IT scope', async () => {
+  const run = lib({ phase6_scenarios: inventory([{}, BREAK, {}]), phase6_cards: SETS,
+    phase7: (value) => ({ ...value, sets: Object.fromEntries(Object.keys(value.sets)
+      .map((objective) => [objective, { scope: `Scope of ${objective}` }])) }) });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const call = callOf(run, 'phase7_sets');
+  assert.match(call.user, /Cards by set\s+- Core Change Validation: \S.* rule\(s\) on \d+ card\(s\)/);
+  assert.doesNotMatch(call.user, /undefined/);
+  assert.match(sent(call), /Regression Testing, give the execution scope: how its run is grouped/);
+  assert.match(sent(call), /BREAK IT, say what it tries to break/);
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.testSets.find((s) => s.objective === 'BREAK IT').scope, 'Scope of BREAK IT');
+});
+
+test('detail.log names the chapters and existing tests the design phases were given', async () => {
+  const name = `existing-tests-${process.pid}.md`;
+  fs.writeFileSync(path.join(FIXTURES, name), 'An existing test of the renewal screen.');
+  try {
+    const run = lib({}, { inputs: { ...fixtureInputs(), existingTests: name } });
+    const result = await runLib(run);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const detail = read(path.join(result.outDir, 'detail.log'));
+    assert.match(detail, /chapters 4, 7; operating manual: yes; existing tests: \d+ tokens/);
+    assert.match(detail, /chapters 11, 12; operating manual: yes; existing tests: \d+ tokens/);
+    assertContentFree(read(path.join(result.outDir, 'status.log')));
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+test('existing tests too large for the set call are left out and logged', async () => {
+  const name = `existing-tests-${process.pid}.md`;
+  fs.writeFileSync(path.join(FIXTURES, name), 'An existing test of the renewal screen. '.repeat(190));
+  try {
+    const inputs = { ...fixtureInputs(), existingTests: name };
+    const model = { endpoint: 'http://localhost:13305/api/v1', name: 'test-model', context: 9000,
+      maxOutput: 800, reasoningOutput: 800 };
+    const run = lib({}, { inputs, model });
+    // The window shrinks after the card and step calls and returns after the set call, so only that call lacks room.
+    const shrink = run.model.json;
+    run.model.json = async (request) => {
+      if (request.schemaName === 'phase7_sets') run.config.model.context = 9000;
+      const answer = await shrink(request);
+      if (request.schemaName.startsWith('phase6_steps')) run.config.model.context = 5700;
+      return answer;
+    };
+    const result = await runLib(run);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.doesNotMatch(callOf(run, 'phase7_sets').user, /An existing test/);
+    const detail = read(path.join(result.outDir, 'detail.log'));
+    assert.match(detail, /phase7 existing tests left out to fit the model/);
+    assert.match(detail, /existing tests: left out/);
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+const MARKED_IMPACTS = (value) => ({ ...value, impacts: {
+  ...Object.fromEntries(Object.keys(value.impacts).map((key) => [key, []])),
+  windows: ['  Renewal tab  ', 'Renewal tab', ''], upstream: ['Fines batch feeds the due date'] } });
+
+test('the Phase 4 impact analysis is kept on the pack and given to the Phase 6 and Phase 9 calls', async () => {
+  const run = lib({ phase4_impact: MARKED_IMPACTS });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.deepEqual(Object.keys(pack.impacts), S.IMPACT_AREAS.map(([key]) => key));
+  assert.deepEqual(pack.impacts.windows, ['Renewal tab']);
+  assert.deepEqual(pack.impacts.upstream, ['Fines batch feeds the due date']);
+  assert.deepEqual(pack.impacts.data, []);
+  const section = /Impact analysis by area\s+Windows, pages and tabs: Renewal tab/;
+  for (const name of ['phase6_scenarios_d1', 'phase6_cards_d1_1', 'phase9_checklist', 'phase9_senior']) {
+    const call = callOf(run, name);
+    assert.match(call.user, section, name);
+    assert.match(call.user, /Upstream: Fines batch feeds the due date/, name);
+    assert.match(call.user, /Data: none found/, name);
+  }
+  assert.doesNotMatch(callOf(run, 'phase6_verify_d1_1')?.user ?? '', /Impact analysis by area/);
+  assertContentFree(read(path.join(result.outDir, 'status.log')));
+});
+
+test('the impact schema keeps every area as a short list of strings and the executive summary as it was', () => {
+  const { properties } = S.impactSchema.properties.impacts;
+  assert.deepEqual(Object.keys(properties), S.IMPACT_AREAS.map(([key]) => key));
+  for (const area of Object.values(properties)) {
+    assert.equal(area.type, 'array');
+    assert.equal(area.items.type, 'string');
+    assert.ok(area.maxItems > 0);
+  }
+  assert.deepEqual(Object.keys(S.impactSchema.properties.executiveSummary.properties),
+    ['scope', 'modules', 'sourceDocuments', 'strategy', 'execution', 'risks']);
+});
+
+test('impactsText is empty without an analysis, says none found for an empty area, and fits its tokens', () => {
+  assert.equal(impactsText(undefined, 500), '');
+  assert.equal(impactsText(null, 500), '');
+  assert.match(impactsText({ windows: [] }, 500), /^Windows, pages and tabs: none found$/m);
+  const long = 'x'.repeat(400);
+  const crowded = Object.fromEntries(S.IMPACT_AREAS.map(([key]) => [key, Array.from({ length: 8 }, (_, i) => `${key}${i} ${long}`)]));
+  const text = impactsText(crowded, 1500);
+  assert.ok(estimateTokens(text) <= 1500 + 80, `${estimateTokens(text)} tokens`);
+  // The first item of every area goes in before the second of any.
+  for (const [key] of S.IMPACT_AREAS) assert.match(text, new RegExp(`${key}0 `));
+  assert.match(text, /more not shown/);
+});
+
+test('a suite pack keeps the impact analysis when the merge does not carry it', async () => {
+  const run = lib({ phase4_impact: MARKED_IMPACTS });
+  const result = await runJob(run.config, { suite: 'LIB' }, { model: run.model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.deepEqual(pack.impacts.windows, ['Renewal tab']);
+  assert.match(callOf(run, 'phase9_checklist').user, /Windows, pages and tabs: Renewal tab/);
+});
+
+test('an oversized impact analysis is cut to a tenth of the call\'s room and never makes a call too big', async () => {
+  const model = { endpoint: 'http://localhost:13305/api/v1', name: 'test-model', context: 9000,
+    maxOutput: 800, reasoningOutput: 800 };
+  const huge = (value) => ({ ...value, impacts: Object.fromEntries(Object.keys(value.impacts)
+    .map((key) => [key, Array.from({ length: 8 }, (_, i) => `${key}${i} ${'y'.repeat(300)}`)])) });
+  const run = lib({ phase4_impact: huge }, { model });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const call = callOf(run, 'phase6_cards_d1_1');
+  const section = /Impact analysis by area\n([\s\S]*?)(\n#|$)/.exec(call.user)?.[1] ?? '';
+  assert.ok(section.length > 0);
+  assert.ok(estimateTokens(section) <= 900 + 120, `${estimateTokens(section)} tokens`);
+  assert.match(section, /more not shown/);
+});
+
+// Rule intake and change scope: requirement type, duplicate wording, conflicts, pages, and the
+// review stop.
+
+const masterRun = (edit, extra = {}) => {
+  const name = withMaster(edit);
+  const inputs = { ...fixtureInputs(), ruleExport: ['node', 'export.mjs', '--doc', '{doc}', '--master', name] };
+  return { name, run: lib(extra, { inputs }) };
+};
+const work = (result, file) => JSON.parse(read(path.join(result.outDir, 'work', file)));
+
+test('a conflicting rule pair stops the run at rule intake', async () => {
+  const run = lib({ phase2_conflicts: (value) => ({ ...value, conflicts: [
+    { rules: ['BR-LIB.UC01-001', 'BR-LIB.UC01-002'], conflict: 'Different renewal windows' }] }) });
+  const result = await runLib(run);
+  assert.equal(result.ok, false);
+  assert.equal(result.phase, 'phase2');
+  assert.equal(result.reason, 'gate:rule-conflict');
+  assert.equal(statusLines(result.outDir).at(-1).conflicts, 1);
+  assertContentFree(read(path.join(result.outDir, 'status.log')));
+  assert.deepEqual(work(result, 'phase2-conflicts.json')[0].rules, ['BR-LIB.UC01-001', 'BR-LIB.UC01-002']);
+  assert.ok(!run.model.calls.some((c) => c.schemaName.startsWith('phase3')));
+});
+
+test('a conflict pair that names one rule twice is dropped', async () => {
+  const run = lib({ phase2_conflicts: (value) => ({ ...value, conflicts: [
+    { rules: ['BR-LIB.UC01-001', 'BR-LIB.UC01-001'], conflict: 'Same rule' }] }) });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+});
+
+test('two live rules of a document with the same wording stop the run, and it holds for a person', async () => {
+  const { name, run } = masterRun((row) => {
+    if (row.rule_id === 'BR-LIB.UC01-002') {
+      row.description = 'Renew is enabled from 30 days before expiry until 90 days after it.';
+      row.rule_summary = row.description;
+    }
+  });
+  try {
+    const result = await runLib(run);
+    assert.equal(result.reason, 'gate:duplicate-rule-wording');
+    assert.equal(result.phase, 'phase2');
+    assert.ok(statusLines(result.outDir).some((l) => l.event === 'stop-doc' && l.document === 1));
+    assert.deepEqual(work(result, 'phase2-duplicates.json'), [['BR-LIB.UC01-001', 'BR-LIB.UC01-002']]);
+    assert.ok(!run.model.calls.some((c) => c.schemaName.startsWith('phase2_conflicts')));
+    assert.ok(HOLD_REASONS.includes(result.reason));
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+test('short identical wording under different names does not stop the run', async () => {
+  const { name, run } = masterRun((row) => {
+    if (row.rule_id === 'BR-LIB.UC01-002' || row.rule_id === 'BR-LIB.UC01-003') {
+      row.rule_summary = 'Field is mandatory.';
+      row.description = row.rule_summary;
+    }
+  });
+  try {
+    const result = await runLib(run);
+    assert.equal(result.ok, true, JSON.stringify(result));
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+test('a NEEDS USER REVIEW result stops change scope before the impact analysis', async () => {
+  const run = lib({ phase3: (value) => ({ ...value, userReview: ['Which expiry date does the change mean?'] }) });
+  const result = await runLib(run);
+  assert.equal(result.phase, 'phase3');
+  assert.equal(result.reason, 'gate:needs-user-review');
+  assert.equal(statusLines(result.outDir).at(-1).review, 1);
+  assert.deepEqual(work(result, 'phase3-review.json'), ['Which expiry date does the change mean?']);
+  assert.equal(work(result, 'partial-pack.json').changeScope.downstream, 'NEEDS USER REVIEW');
+  assert.ok(!run.model.calls.some((c) => c.schemaName.startsWith('phase4')));
+});
+
+test('change scope ends READY WITH ASSUMPTIONS when it adds assumptions and READY when it adds none', async () => {
+  const phase3 = (outDir) => statusLines(outDir).find((l) => l.event === 'pass' && l.phase === 'phase3');
+  const first = await runLib(lib({ phase3: (value) => ({ ...value, assumptions: [
+    { assumption: 'The renewal window is calendar days', basis: 'The document says days' }] }) }));
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(phase3(first.outDir).downstream, 'READY WITH ASSUMPTIONS');
+  const second = await runLib(lib({ phase3: (value) => ({ ...value, assumptions: [] }) }));
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(phase3(second.outDir).downstream, 'READY');
+});
+
+test('a rule with no source page warns and is named under Job Intake, and every rule carries its requirement type', async () => {
+  const { name, run } = masterRun((row) => {
+    if (row.rule_id === 'BR-LIB.UC01-003') row.source_page = '';
+    if (row.rule_id === 'BR-LIB.UC01-004') row.requirement_type = 'Workflow';
+  });
+  try {
+    const result = await runLib(run);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const warn = statusLines(result.outDir).find((l) => l.reason === 'rule-page-missing');
+    assert.equal(warn.document, 1);
+    assert.equal(warn.rules, 1);
+    const pack = JSON.parse(read(result.packPath));
+    assert.match(pack.limitations['Job Intake'], /BR-LIB\.UC01-003/);
+    assert.ok(!read(path.join(result.outDir, 'status.log')).includes('BR-LIB.UC01-003'));
+    const types = Object.fromEntries(pack.rules.map((rule) => [rule.id, rule.requirementType]));
+    assert.equal(types['BR-LIB.UC01-004'], 'Workflow');
+    assert.equal(types['BR-LIB.UC01-001'], 'Business Rule');
+  } finally {
+    fs.rmSync(path.join(FIXTURES, name), { force: true });
+  }
+});
+
+test('a conflict reported in both orders counts once, and a blank review question does not stop change scope', async () => {
+  const pair = (a, b) => ({ rules: [a, b], conflict: 'Different renewal windows' });
+  const run = lib({ phase2_conflicts: (value) => ({ ...value, conflicts: [
+    pair('BR-LIB.UC01-001', 'BR-LIB.UC01-002'), pair('BR-LIB.UC01-002', 'BR-LIB.UC01-001')] }) });
+  const result = await runLib(run);
+  assert.equal(result.reason, 'gate:rule-conflict');
+  assert.equal(statusLines(result.outDir).at(-1).conflicts, 1);
+  const blank = await runLib(lib({ phase3: (value) => ({ ...value, userReview: ['', '  '] }) }));
+  assert.equal(blank.ok, true, JSON.stringify(blank));
+});
+
+// A step the rules forbid, planted on the first card of the step call.
+const forbidStep = (value) => {
+  value.cards[0].steps[0] = { step: 1, possible: false, why: 'BR-LIB.UC01-002 disables Save until the value changes' };
+  return value;
+};
+
+test('a card with a step the rules forbid is designed again once and kept when the new card is possible', async () => {
+  const run = lib({ phase6_scenarios: inventory([{}, {}]), phase6_cards: titled, phase6_steps: forbidStep });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const fix = run.model.calls.filter((c) => c.schemaName.startsWith('phase6_stepfix'));
+  assert.equal(fix.length, 1);
+  assert.match(fix[0].user, /step 1: BR-LIB\.UC01-002 disables Save/);
+  assert.equal(run.model.calls.filter((c) => c.schemaName.startsWith('phase6_restep')).length, 1);
+  const pack = JSON.parse(read(result.packPath));
+  assert.ok(!pack.assumptions.some((a) => /may not be possible/.test(a.assumption)));
+  assert.equal(phase6Pass(result.outDir).stepsFlagged, 1);
+});
+
+test('a card still flagged after one redesign is kept, with an assumption naming the step and the rule', async () => {
+  const run = lib({ phase6_scenarios: inventory([{}, {}]), phase6_cards: titled, phase6_steps: forbidStep,
+    phase6_restep: forbidStep });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  const note = pack.assumptions.find((a) => /Step 1 of the card .* may not be possible/.test(a.assumption));
+  assert.ok(note, 'assumption written');
+  assert.match(note.why, /BR-LIB\.UC01-002 disables Save/);
+  assert.equal(pack.testCards.length, 2);
+});
+
+test('a card that repeats another is dropped before verification and counted', async () => {
+  const same = (value) => ({ ...value, cards: value.cards.map((card) => ({ ...card,
+    title: 'Renewal of a card', mission: 'Renewal of a card', focus: ['Renewal of a card'] })) });
+  const run = lib({ phase6_scenarios: inventory([{}, {}]), phase6_cards: same });
+  const result = await runLib(run);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const pack = JSON.parse(read(result.packPath));
+  assert.equal(pack.testCards.length, 1);
+  assert.equal(phase6Pass(result.outDir).repeats, 1);
+  assert.ok(pack.assumptions.some((a) => /dropped as a repeat/.test(a.assumption)));
+});
+
+test('rules a card takes from a folded or dropped card join its scenario, so a redesign keeps them', () => {
+  const rule = (id) => ({ id, sourceDocument: 'D', module: 'M', impact: 'Direct Change', summary: `rule ${id}` });
+  const step = (description, expected, rules) => ({ description, expected, rules });
+  const raises = { title: 'Blocked', scenario: 'S1', rules: ['R1'], objectives: ['Core'], expected: 'The error message shows',
+    steps: [step('Select the role', 'The error message shows', ['R1'])] };
+  const answers = { title: 'Ok', scenario: 'S2', rules: ['R1', 'R2'], objectives: ['Flow'], expected: 'The message closes',
+    steps: [step('Select Ok', 'The message closes', ['R1', 'R2'])] };
+  const scenarios = [{ id: 'S1', rules: ['R1'] }, { id: 'S2', rules: ['R1', 'R2'] }];
+  const ctx = { designed: { k: { cards: [raises, answers], scenarios, assumptions: [] } },
+    pack: { rules: [rule('R1'), rule('R2')] } };
+  const verified = new Set([raises, answers]);
+  const checked = new Set([raises, answers]);
+  const done = tidyDocument(ctx, { key: 'k', name: 'D', module: 'M', text: '' }, verified, checked);
+  assert.equal(done.folded, 1);
+  assert.deepEqual(ctx.designed.k.cards.map((c) => c.title), ['Blocked']);
+  assert.deepEqual(scenarios[0].rules, ['R1', 'R2']);
+  assert.ok(!verified.has(raises) && !checked.has(raises));
+  assert.deepEqual(ctx.designed.k.cards[0].rules, ['R1', 'R2']);
+  assert.deepEqual(ctx.designed.k.cards[0].objectives, ['Core', 'Flow']);
+});
+
+test('a BREAK IT card stays out of the core set', () => {
+  const ctx = { job: { suite: false }, config: {}, coreObjective: 'Core', fullCoverageObjective: 'Full',
+    breakItObjective: 'Break', pack: { objectives: ['Core', 'Flow', 'Full', 'Break']
+      .map((objective) => ({ objective, applicable: true })) } };
+  const card = { derivation: 'Requirement', objectives: ['Core', 'Flow'] };
+  assert.deepEqual(setsOf(ctx, { ...card, breakIt: true }).sort(), ['Break', 'Flow', 'Full']);
+  assert.deepEqual(setsOf(ctx, { ...card, breakIt: false }).sort(), ['Core', 'Flow', 'Full']);
 });
