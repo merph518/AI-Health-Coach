@@ -4,15 +4,16 @@
 //   node --test plugins/att-docs/skills/build-test-pack/local/build-pack.test.mjs
 
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { getEventListeners } from 'node:events';
 import http from 'node:http';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { addJob, cancelJob, checkJob, claimStale, cutoffAfter, drainQueue, fillQueue, jobFrom, jobFromLine, jobStatus, lockHeld,
+import { addJob, cancelJob, checkJob, claimStale, cutoffAfter, drainQueue, fillQueue, jobFrom, jobFromLine, jobStatus, lockHeld, rerunJob,
   markRestore, parseArgs, queueLines, readQueue, removeJob, restoreLines, restorePaused, restoreUnits,
   summaryLines }
   from './build-pack.mjs';
@@ -26,11 +27,13 @@ import * as S from './schemas.mjs';
 import { estimateTokens } from './model.mjs';
 import { almDescriptions, batches, candidateLine, documentInputs, documentRules, dropUnfoundedAssumptions, expectedProblems, impactsText, phase5,
   resultsAgree, setsOf, splitText, tidyDocument } from './phases.mjs';
-import { jobId, runJob } from './run.mjs';
+import { jobId, PHASES, readCheckpoint, runJob } from './run.mjs';
+import { compareSnapshots } from './rerun.mjs';
 import { memoryLow, parseMeminfo, waitForMemory } from './meminfo.mjs';
 import { renderReport, reportData, seededRandom, spotChecks, writeReports } from './report.mjs';
 import { createReleaser } from './release.mjs';
 import { sleepUnlessAborted } from './abort.mjs';
+import { callFileName, promptHash, schemaHash } from './calls.mjs';
 import { jobLogs, readStatusLog, statusFields } from './status.mjs';
 import { readPack } from './pack.mjs';
 
@@ -39,11 +42,17 @@ const FIXTURES = path.join(HERE, 'fixtures');
 // The fixtures can sit in a worktree of this repository; the worktree check has its own tests.
 process.env.BUILD_PACK_ALLOW_WORKTREE = '1';
 
+// Every scratch folder lives under one root, removed when this file's tests finish, so a run
+// leaves nothing in the system temp folder.
+const SCRATCH_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-test-'));
+after(() => fs.rmSync(SCRATCH_ROOT, { recursive: true, force: true }));
+const scratch = (prefix) => fs.mkdtempSync(path.join(SCRATCH_ROOT, prefix));
+
 const fixtureInputs = () => JSON.parse(fs.readFileSync(path.join(FIXTURES, 'pipeline.json'), 'utf8')).inputs;
 
 /** A config over the fixtures whose output and queue land in a fresh temp folder. */
 function fixtureConfig(overrides = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-'));
+  const dir = scratch('build-pack-');
   const raw = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'pipeline.json'), 'utf8'));
   // The memory check reads the machine running the tests, so it is off unless a test turns it on.
   // The release step is off too, so no test unloads a real model; the release tests turn it on.
@@ -988,7 +997,7 @@ async function askOver(finish, { model = {}, phase = 'phase1', step = 's', reaso
   const { ask } = await import('./phases.mjs');
   const lines = [];
   const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, job: { id: 'j' },
-    logs: { status: (fields) => lines.push(fields), detail() {} },
+    logs: { status: (fields) => lines.push(fields), detail() {}, call() {} },
     model: { ...modelClient({ endpoint: 'http://localhost:1/v1', name: 'm', fetchImpl }),
       countTokens: async () => tokens, contextWindow: async () => null } };
   const run = () => ask(ctx, { phase, step, reasoning, inputs: [],
@@ -1238,7 +1247,7 @@ test('the nightly queue takes no job outside its window and retries interrupted 
 });
 
 test('a job started on request runs first, then other start-now rows, within the configured cutoff', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-q-'));
+  const dir = scratch('build-pack-q-');
   const config = fixtureConfig({ queue: { file: path.join(dir, 'queue.json'), cutoff: '05:30' } });
   addJob(config, { issue: '100' });
   addJob(config, { issue: '200', now: true });
@@ -1387,7 +1396,7 @@ test('a run releases only its own lock', async () => {
 });
 
 test('clearing a stale lock never removes a lock another starter just took', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-lock-'));
+  const dir = scratch('build-pack-lock-');
   const lock = path.join(dir, 'queue.json.lock');
   // The file still holds what was judged stale: it goes.
   fs.writeFileSync(lock, '2147483646');
@@ -1714,7 +1723,7 @@ test('queue add --now on a queued row marks it and exits 0', () => {
 });
 
 test('a run whose intake read usable rules does not export them again in Phase 2', async () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'exports-')), 'log');
+  const log = path.join(scratch('exports-'), 'log');
   const config = fixtureConfig();
   config.inputs = { ...config.inputs, ruleExport: loggedExport(log) };
   const model = contextOnly('UC02 Overdue Fines');
@@ -1762,11 +1771,11 @@ test('an export outage in Phase 2 keeps the rules intake read and warns', async 
 });
 
 test('a document path outside the root gets the path code and no export runs', () => {
-  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'exports-')), 'log');
+  const log = path.join(scratch('exports-'), 'log');
   const config = fixtureConfig();
   config.inputs = { ...config.inputs, ruleExport: ['node', '-e',
     `require("fs").appendFileSync(${JSON.stringify(log)}, process.argv[1]);`, '{doc}'] };
-  const ctx = { config, job: { id: 'j' }, logs: { status() {}, detail() {} } };
+  const ctx = { config, job: { id: 'j' }, logs: { status() {}, detail() {}, call() {} } };
   assert.deepEqual(documentRules(ctx, path.join(FIXTURES, '..', 'phases.mjs')),
     { code: 'document-file', rules: [] });
   assert.deepEqual(documentRules(ctx, path.join(FIXTURES, 'docs')), { code: 'document-file', rules: [] });
@@ -1873,7 +1882,7 @@ test('a checkpoint written without document paths resumes without re-reading the
 
 /** Two roots with the fixtures' files, a config over each, and one output folder both write. */
 function twoRoots() {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'roots-'));
+  const base = scratch('roots-');
   const roots = ['a', 'b'].map((name) => {
     const root = path.join(base, name);
     fs.cpSync(FIXTURES, root, { recursive: true });
@@ -1933,7 +1942,7 @@ test('rootRelative keeps a document path relative to the root whatever it was gi
   assert.equal(rootRelative(config, '/elsewhere/docs/a/B.md'), 'docs/a/B.md');
   assert.equal(rootRelative(config, '/elsewhere/notes.md'), '/elsewhere/notes.md');
   // A path from a worktree whose top folder is above the root is cut to what exists under the root.
-  const sub = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-'));
+  const sub = scratch('sub-');
   fs.mkdirSync(path.join(sub, 'docs'));
   fs.writeFileSync(path.join(sub, 'docs', 'B.md'), '');
   assert.equal(rootRelative({ root: sub }, '/top/.claude/worktrees/w/specs/docs/B.md'), 'docs/B.md');
@@ -1950,7 +1959,7 @@ test('rootRelative keeps a document path relative to the root whatever it was gi
 
 /** A git repository holding the fixtures and a pipeline config at its top, and a worktree of it. */
 function repoWithWorktree() {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wt-')));
+  const base = fs.realpathSync(scratch('wt-'));
   const main = path.join(base, 'main');
   fs.cpSync(FIXTURES, main, { recursive: true });
   const raw = JSON.parse(read(path.join(FIXTURES, 'pipeline.json')));
@@ -2032,7 +2041,7 @@ test('queue add stores each document relative to the root', () => {
 });
 
 test('a folder outside a repository is not a worktree', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plain-'));
+  const dir = scratch('plain-');
   assert.equal(mainCheckout(dir), null);
   const was = process.env.BUILD_PACK_ALLOW_WORKTREE;
   delete process.env.BUILD_PACK_ALLOW_WORKTREE;
@@ -2490,7 +2499,7 @@ test('a reasoning call that fails for any reason is retried once with thinking o
   };
   const config = fixtureConfig();
   const { ask } = await import('./phases.mjs');
-  const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, logs: { status() {}, detail() {} },
+  const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, logs: { status() {}, detail() {}, call() {} },
     job: { id: 'j' }, model: { ...modelClient({ endpoint: 'http://localhost:1/v1', name: 'm', fetchImpl }),
       countTokens: async () => 10 } };
   const value = await ask(ctx, { phase: 'phase9', step: 's', reasoning: true, inputs: [],
@@ -2521,7 +2530,7 @@ function fakeSystemctl(active, failing = []) {
 
 /** A fake /proc with one process per [pid, comm, cgroup] row. */
 function fakeProc(rows) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-proc-'));
+  const root = scratch('build-pack-proc-');
   for (const [pid, comm, cgroup] of rows) {
     fs.mkdirSync(path.join(root, String(pid)));
     fs.writeFileSync(path.join(root, String(pid), 'comm'), `${comm}\n`);
@@ -3005,7 +3014,7 @@ test('release config has defaults and is validated', () => {
 
 /** The config with no release block, so the shipped default shows. */
 function loadDefault() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-'));
+  const dir = scratch('build-pack-');
   const raw = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'pipeline.json'), 'utf8'));
   Object.assign(raw, { repoRoot: FIXTURES, output: path.join(dir, 'out'),
     queue: { file: path.join(dir, 'queue.json') } });
@@ -3016,7 +3025,7 @@ function loadDefault() {
 
 /** A config whose queue has the given sources, over the fixtures. */
 function sourcedConfig(sources, report = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-src-'));
+  const dir = scratch('build-pack-src-');
   return fixtureConfig({ queue: { file: path.join(dir, 'queue.json'), sources }, report });
 }
 
@@ -3033,7 +3042,7 @@ test('a job line is a bare number pair, a suite, or the full command-line form',
 });
 
 test('the queue fills itself from a folder of lists, and never queues a known job twice', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-in-'));
+  const dir = scratch('build-pack-in-');
   fs.writeFileSync(path.join(dir, 'build-12.txt'), '# build 12\n9415 7001\n501\nnot a job\n\nsuite LIB\n');
   fs.writeFileSync(path.join(dir, 'more.txt'), '501\n777\n');
   fs.writeFileSync(path.join(dir, '.hidden'), '999\n');
@@ -3064,7 +3073,7 @@ test('the queue fills from record file names and from a command, and a bad sourc
     { type: 'records', glob: 'issues/*.md', pattern: '^ISSUE_(\\d+)_(renewal)' },
     { type: 'command', command: ['node', '-e', 'console.log("600 6001"); console.log("suite LIB")'] },
     { type: 'command', command: ['node', '-e', 'process.exit(3)'] },
-    { type: 'folder', path: path.join(os.tmpdir(), 'build-pack-no-such-folder') },
+    { type: 'folder', path: path.join(SCRATCH_ROOT, 'no-such-folder') },
   ]);
   const result = fillQueue(config);
   // The second pattern's second group is read as a change number.
@@ -3084,7 +3093,7 @@ test('a queue source is checked when the config loads', () => {
 });
 
 test('a nightly run fills the queue once it holds it, and a run outside the window does not', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-in-'));
+  const dir = scratch('build-pack-in-');
   fs.writeFileSync(path.join(dir, 'list.txt'), '9415\n');
   const config = sourcedConfig([{ type: 'folder', path: dir }]);
   const ran = [];
@@ -3296,7 +3305,7 @@ test('the report command writes the daily file, and the weekly rollup on the set
   assert.deepEqual(names(writeReports(config, queue, { now: tuesday, period: 'week' })), ['weekly-2026-10-27.md']);
   assert.ok(fs.existsSync(path.join(config.output, 'reports', 'weekly-2026-10-27.md')));
   assert.throws(() => writeReports(config, queue, { period: 'month' }), /--period/);
-  const other = fixtureConfig({ report: { weeklyDay: 2, dir: path.join(os.tmpdir(), 'build-pack-reports') } });
+  const other = fixtureConfig({ report: { weeklyDay: 2, dir: path.join(scratch('build-pack-reports-'), 'reports') } });
   assert.deepEqual(names(writeReports(other, queue, { now: tuesday })),
     ['daily-2026-10-27.md', 'weekly-2026-10-27.md']);
   assert.throws(() => fixtureConfig({ report: { weeklyDay: 9 } }), /report.weeklyDay/);
@@ -3304,7 +3313,7 @@ test('the report command writes the daily file, and the weekly rollup on the set
 });
 
 test('the command line fills the queue and writes the report', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-in-'));
+  const dir = scratch('build-pack-in-');
   fs.writeFileSync(path.join(dir, 'list.txt'), '9415\n');
   const config = sourcedConfig([{ type: 'folder', path: dir }]);
   const cli = (...args) => spawnSync('node', [path.join(HERE, 'build-pack.mjs'), ...args,
@@ -3373,7 +3382,7 @@ test('an explicit start request takes a job that is waiting for the next night',
 });
 
 test('the default record pattern reads a change only when it starts with a digit', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-rec-'));
+  const dir = scratch('build-pack-rec-');
   for (const name of ['SIR-9415-credit-limit.md', 'SIR-9416-Create-account.md', 'SIR-9417-crash-on-save.md',
     'SIR-9418-change-7001.md', 'ISSUE_9419_CR7002_renewal.md', 'SIR-9421-changes-to-fees.md',
     'SIR-9422-CR-CHG7001.md', 'SIR-9423-CR-7001,7002.md', 'SIR-9424-CR-7001(1).md',
@@ -3391,7 +3400,7 @@ test('the default record pattern reads a change only when it starts with a digit
 });
 
 test('queue remove and queue fill by hand refuse while a run holds the queue', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-in-'));
+  const dir = scratch('build-pack-in-');
   fs.writeFileSync(path.join(dir, 'list.txt'), '9415\n');
   const config = sourcedConfig([{ type: 'folder', path: dir }]);
   addJob(config, { issue: '777' });
@@ -3446,7 +3455,7 @@ test('a start-only run leaves an interrupted row for the night', async () => {
 });
 
 test('a change token with no separator before it is still read, or counted when its number is bad', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-pack-rec-'));
+  const dir = scratch('build-pack-rec-');
   for (const name of ['SIR-9415CR7001.md', 'SIR-9416.CR7002.md', 'SIR-9417Create-account.md',
     'SIR-9418credit-limit.md', 'SIR-9419crash-on-save.md', 'SIR-9420changes-to-fees.md',
     'SIR-9421CR-CHG7001.md', 'SIR-9422.change.md']) {
@@ -4487,7 +4496,7 @@ test('a revalidation that leaves items open rates the pack again, with the Low l
 
 test('a job saved at the confidence step before the senior review moved reruns both', async () => {
   const { readCheckpoint, checkpointPath } = await import('./run.mjs');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'checkpoint-'));
+  const dir = scratch('checkpoint-');
   fs.mkdirSync(path.join(dir, 'work'));
   fs.writeFileSync(checkpointPath(dir), JSON.stringify({ phase: 'phase9-confidence', state: {} }));
   assert.equal(readCheckpoint(dir).phase, 'phase9-checklist');
@@ -4630,7 +4639,7 @@ async function runPhase5(description, rules, closure, objectives = ['Core Change
     job: options.suite ? { suite: 'SUITE' } : {}, builder: { OBJECTIVES: objectives }, coreObjective: 'Core Change Validation',
     description, model, calls: 0, tokens: { prompt: 0, output: 0 },
     config: { model: { context, reasoningOutput: 100, maxOutput: 100 }, objectiveEvidence: evidence },
-    logs: { detail: (label, text) => logged.push(`${label}: ${text}`), status() {} }, private() {} };
+    logs: { detail: (label, text) => logged.push(`${label}: ${text}`), status() {}, call() {} }, private() {} };
   await phase5(ctx);
   return { row: ctx.pack.objectives.find((row) => row.objective === 'Integration Testing'), logged, model };
 }
@@ -4776,7 +4785,7 @@ test('evidence never turns an applicable objective off, and keeps its reason', a
     coreObjective: 'Core Change Validation', description: `Short Description: ${SENTENCE}`, model, calls: 0,
     tokens: { prompt: 0, output: 0 },
     config: { model: { context: 100000, reasoningOutput: 100, maxOutput: 100 }, objectiveEvidence: [EVIDENCE_RULE] },
-    logs: { detail() {}, status() {} }, private() {} };
+    logs: { detail() {}, status() {}, call() {} }, private() {} };
   await phase5(ctx);
   assert.ok(ctx.pack.objectives.every((row) => row.applicable && row.reason === 'The model\'s reason.'));
 });
@@ -4965,7 +4974,7 @@ test('a guess lowers the window but never raises a smaller one', async () => {
   const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
     context: 128000, maxOutput: 500, reasoningOutput: 500 } });
   const run = async (health, saved, window) => {
-    const ctx = { config, job: { id: 'j' }, logs: { status() {}, detail() {} }, window,
+    const ctx = { config, job: { id: 'j' }, logs: { status() {}, detail() {}, call() {} }, window,
       model: windowClient({ '/health': health, '/models/m%20a%2Fb': SAVED_SIZE(saved) }) };
     await readWindow(ctx, 'p');
     return ctx.window;
@@ -5108,7 +5117,7 @@ test('a server window just above the reply and reserve but with no input room fa
     context: 20000, maxOutput: 500, reasoningOutput: 500 } });
   const model = { ...fakeModel(), contextWindow: async () => ({ size: 2800, guess: false }) };
   const { readWindow } = await import('./phases.mjs');
-  const ctx = { config, job: { id: 'j' }, model, logs: { status() {}, detail() {} } };
+  const ctx = { config, job: { id: 'j' }, model, logs: { status() {}, detail() {}, call() {} } };
   await assert.rejects(readWindow(ctx, 'intake'),
     (error) => error instanceof ModelError && error.code === 'window-too-small');
   const result = await runJob(config, { issue: '501', change: '7001' }, { model, echo: false });
@@ -5168,7 +5177,7 @@ test('the floor uses the larger reply, so a window only that floor rejects fails
   const accepts = async (cfg, size) => {
     try {
       await readWindow({ config: cfg, job: { id: 'j' }, model: { contextWindow: async () => ({ size, guess: false }) },
-        logs: { status() {}, detail() {} } }, 'p');
+        logs: { status() {}, detail() {}, call() {} } }, 'p');
       return true;
     } catch (error) {
       if (error instanceof ModelError && error.code === 'window-too-small') return false;
@@ -5190,7 +5199,7 @@ test('room reserves the widest reply a thinking call may ask for, so a prompt si
   const config = fixtureConfig({ model: { endpoint: 'http://localhost:1/v1', name: 'm',
     context: 60000, maxOutput: 16384, reasoningOutput: 8192 } });
   const ctx = { config, calls: 0, tokens: { prompt: 0, output: 0 }, job: { id: 'j' },
-    logs: { status() {}, detail() {} },
+    logs: { status() {}, detail() {}, call() {} },
     model: { json: async () => ({ value: {}, usage: { promptTokens: 1, outputTokens: 1, ms: 1 } }),
       // A prompt that uses all the room, plus the reference text already counted in it.
       countTokens: async () => room(ctx, true, []) + 100 } };
@@ -5493,7 +5502,7 @@ test('a pauser wait ends at once when the stop signal aborts', async () => {
   const exec = (command, args) => (args.includes('list-units')
     ? { status: 0, stdout: 'x.service loaded active running\n' } : { status: 0, stdout: '' });
   // A unit with a busy worker inside it is waited for.
-  const proc = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-'));
+  const proc = scratch('proc-');
   fs.mkdirSync(path.join(proc, '42'));
   fs.writeFileSync(path.join(proc, '42', 'comm'), 'worker\n');
   fs.writeFileSync(path.join(proc, '42', 'cgroup'), '0::/system.slice/x.service\n');
@@ -5617,7 +5626,7 @@ test('queue cancel stops a real run during a model call, frees the queue, and le
     res.end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const marker = path.join(os.tmpdir(), `released-${process.pid}-${Date.now()}`);
+  const marker = path.join(scratch('released-'), 'marker');
   try {
     const config = fixtureConfig({
       model: { endpoint: `http://127.0.0.1:${server.address().port}/api/v1`, name: 'test-model' },
@@ -6310,4 +6319,380 @@ test('a BREAK IT card stays out of the core set', () => {
   const card = { derivation: 'Requirement', objectives: ['Core', 'Flow'] };
   assert.deepEqual(setsOf(ctx, { ...card, breakIt: true }).sort(), ['Break', 'Flow', 'Full']);
   assert.deepEqual(setsOf(ctx, { ...card, breakIt: false }).sort(), ['Core', 'Flow', 'Full']);
+});
+
+/** The call records of a job, in sequence order. */
+const callRecords = (outDir) => {
+  const dir = path.join(outDir, 'work', 'calls');
+  return fs.readdirSync(dir).sort().map((name) => ({ name, ...JSON.parse(read(path.join(dir, name))) }));
+};
+
+test('a run records every model call with its prompt, reply and counts, in the order they were made', async () => {
+  const model = fakeModel({ ...INTAKE, ...NOT_REMOVAL });
+  const answered = [];
+  const answer = model.json;
+  model.json = async (request) => {
+    const reply = await answer(request);
+    answered.push(structuredClone(reply.value));
+    return reply;
+  };
+  const result = await runJob(fixtureConfig(), { issue: '501', change: '7001' }, { model, echo: false });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const records = callRecords(result.outDir);
+  assert.equal(records.length, model.calls.length);
+  assert.deepEqual(records.map((r) => r.seq), records.map((_, i) => i + 1));
+  records.forEach((record, i) => {
+    const sent = model.calls[i];
+    assert.equal(record.name, callFileName(i + 1, sent.schemaName, 1));
+    assert.equal(record.attempt, 1);
+    assert.equal(record.step, sent.schemaName);
+    assert.equal(record.thinking, Boolean(sent.reasoning));
+    assert.equal(record.maxTokens, sent.maxTokens);
+    assert.deepEqual(record.prompt, { system: sent.system, user: sent.user });
+    assert.equal(record.promptHash, promptHash(sent.system, sent.user));
+    assert.equal(record.schemaHash, schemaHash(sent.schema));
+    assert.deepEqual(record.usage, { promptTokens: 10, outputTokens: 5 });
+    assert.equal(record.error, null);
+    assert.deepEqual(record.reply, answered[i]);
+    assert.ok(Date.parse(record.endedAt) >= Date.parse(record.startedAt));
+  });
+  // Prompt text stays out of the log a session may read.
+  assertContentFree(read(path.join(result.outDir, 'status.log')));
+});
+
+test('a thinking call that is cut and retried records both attempts, and a second cut records as runaway', async () => {
+  const dir = scratch('calls-ask-');
+  const reply = (cut) => ({ ok: true, json: async () => ({ choices: [{ finish_reason: cut ? 'length' : 'stop',
+    message: { content: cut ? '{"a":' : '{"ok":true}' } }], usage: { prompt_tokens: 30, completion_tokens: 7 } }) });
+  const { ask } = await import('./phases.mjs');
+  const over = (cutOn) => ({ config: fixtureConfig(), calls: 0, tokens: { prompt: 0, output: 0 },
+    logs: jobLogs(dir, { echo: false }), job: { id: 'j' },
+    model: { ...modelClient({ endpoint: 'http://localhost:1/v1', name: 'm',
+      fetchImpl: async (url, options) => reply(cutOn(JSON.parse(options.body).chat_template_kwargs.enable_thinking)) }),
+    countTokens: async () => 10 } });
+  const call = (ctx, step) => ask(ctx, { phase: 'phase9', step, reasoning: true, inputs: [['Doc', 'text']],
+    schema: { type: 'object' }, task: 'do it' });
+  // Cut while thinking only: the retry answers.
+  assert.deepEqual(await call(over((thinking) => thinking), 'walk'), { ok: true });
+  // Cut on both attempts: the second cut is a runaway.
+  await assert.rejects(call(over(() => true), 'repair'), { code: 'runaway' });
+  const records = callRecords(dir);
+  assert.deepEqual(records.map((r) => [r.step, r.attempt, r.thinking, r.error?.code ?? null]), [
+    ['phase9_walk', 1, true, 'length'],
+    ['phase9_walk', 2, false, null],
+    ['phase9_repair', 1, true, 'length'],
+    ['phase9_repair', 2, false, 'runaway'],
+  ]);
+  assert.deepEqual(records[1].reply, { ok: true });
+  assert.equal(records[0].reply, null);
+  assert.equal(records[0].usage.outputTokens, 7);
+  assert.equal(records[0].promptHash, records[1].promptHash);
+});
+
+test('a resumed job keeps the calls it recorded before the stop and numbers the new ones after them', async () => {
+  const config = fixtureConfig();
+  const down = { phase9_checklist: () => { throw new ModelError('no-reply', 'x'); } };
+  const first = await runJob(config, { issue: '501' },
+    { model: fakeModel({ ...INTAKE, ...NOT_REMOVAL, ...down }), echo: false });
+  assert.equal(first.ok, false);
+  const before = callRecords(first.outDir);
+  assert.ok(before.some((r) => r.error?.code === 'no-reply'));
+  const model = fakeModel({ ...INTAKE, ...NOT_REMOVAL });
+  const again = await runJob(config, { issue: '501', resume: true }, { model, echo: false });
+  assert.equal(again.ok, true, JSON.stringify(again));
+  const after = callRecords(again.outDir);
+  assert.deepEqual(after.slice(0, before.length), before);
+  assert.equal(after.length, before.length + model.calls.length);
+  assert.deepEqual(after.map((r) => r.seq), after.map((_, i) => i + 1));
+});
+
+// A job's slice runs: a snapshot per phase, and a rerun from any phase in a sandbox.
+
+const SOURCE_JOB = 'issue-501-change-7001';
+
+/** Every file under `dir` by relative path, with a hash of its bytes. */
+function digest(dir) {
+  const files = {};
+  const walk = (folder) => {
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else files[path.relative(dir, file)] = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    }
+  };
+  walk(dir);
+  return files;
+}
+
+/** A fixture job that ran end to end, with its queue row, ready to be run again in slices. */
+async function finishedJob(overrides = {}) {
+  const setup = lib({}, overrides);
+  addJob(setup.config, { issue: '501', change: '7001' });
+  const result = await runLib(setup);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  return { ...setup, result };
+}
+
+test('every phase that passes leaves a snapshot, and checkpoint.json is the last one', async () => {
+  const { result } = await finishedJob();
+  const folder = path.join(result.outDir, 'work', 'checkpoints');
+  assert.deepEqual(fs.readdirSync(folder).sort(), PHASES.map((phase) => `${phase}.json`).sort());
+  for (const phase of PHASES) assert.equal(JSON.parse(read(path.join(folder, `${phase}.json`))).phase, phase);
+  // The resume file is what it was before snapshots: the state after the last phase.
+  assert.equal(read(path.join(result.outDir, 'work', 'checkpoint.json')), read(path.join(folder, 'phase10.json')));
+  assert.deepEqual(readCheckpoint(result.outDir).phase, 'phase10');
+});
+
+test('a slice from Phase 9 revalidation runs that phase alone and leaves the job as it was', async () => {
+  const marker = path.join(scratch('slice-released-'), 'marker');
+  const { config, model, result } = await finishedJob({
+    release: { command: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`] } });
+  // The phase's output is written by the slice, so it is absent from the job's folder before the slice runs.
+  fs.rmSync(path.join(result.outDir, 'work', 'phase9-revalidation.json'));
+  const before = digest(result.outDir);
+  const queueBefore = read(config.at(config.queue.file));
+  model.calls.length = 0;
+  const slice = await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'try' },
+    { model, echo: false });
+  assert.equal(slice.result.ok, true, JSON.stringify(slice.result));
+  assert.equal(slice.id, `${SOURCE_JOB}~try`);
+  // The job's folder, its queue row and its workbook are as they were.
+  assert.deepEqual(digest(result.outDir), before);
+  assert.equal(read(config.at(config.queue.file)), queueBefore);
+  assert.ok(fs.existsSync(result.workbook));
+  // Only the revalidation ran, on the model's side and in the log.
+  assert.ok(model.calls.length > 0);
+  assert.ok(model.calls.every((call) => /^phase(8|9_revalidation)/.test(call.schemaName)),
+    model.calls.map((call) => call.schemaName).join(' '));
+  const sandbox = path.join(config.output, slice.id);
+  const lines = statusLines(sandbox).filter((line) => line.job === slice.id);
+  assert.deepEqual(lines.filter((line) => line.event === 'start').map((line) => line.phase), ['phase9-revalidate']);
+  assert.deepEqual(lines.filter((line) => line.event === 'pass').map((line) => line.phase), ['phase9-revalidate']);
+  assert.equal(lines.find((line) => line.event === 'resume').after, 'phase9-confidence');
+  assert.equal(lines.at(-1).event, 'slice');
+  // The sandbox holds the phase's outputs and its snapshot, the earlier snapshots, and no pack or workbook.
+  assert.ok(fs.existsSync(path.join(sandbox, 'work', 'phase9-revalidation.json')));
+  assert.ok(fs.existsSync(path.join(sandbox, 'work', 'checkpoints', 'phase9-revalidate.json')));
+  assert.ok(fs.existsSync(path.join(sandbox, 'work', 'checkpoints', 'phase9-confidence.json')));
+  assert.ok(!fs.existsSync(path.join(sandbox, 'work', 'checkpoints', 'phase10.json')));
+  assert.deepEqual(fs.readdirSync(sandbox).filter((name) => !['work', 'review', 'status.log', 'detail.log'].includes(name)), []);
+  // The same model gives the same pack, so the summary shows no change.
+  assert.match(slice.lines[0], /^cards  source (\d+)  sandbox \1  added 0  removed 0$/);
+  assert.deepEqual(slice.lines.slice(1), ['coverage  unchanged', 'confidence  unchanged High', 'revalidation  open 0 -> 0']);
+  // The model was not unloaded, since the slice runs no release step.
+  assert.ok(!fs.existsSync(marker));
+  assertContentFree(slice.lines.join('\n'));
+  // The queue is free again and the sandbox reads like a job.
+  assert.equal(lockHeld(config), false);
+  assert.match(jobStatus(config, slice.id)[0], new RegExp(`^${slice.id}  passed  queue free$`));
+  assert.match(jobStatus(config, slice.id).join('\n'), /done phase=phase9-revalidate/);
+  assert.ok(!jobStatus(config, slice.id).join('\n').includes('phase9-checklist'));
+});
+
+test('a slice of several phases runs them in order and stops after the last', async () => {
+  const { config, model, result } = await finishedJob();
+  model.calls.length = 0;
+  const slice = await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-senior', until: 'phase9-confidence' },
+    { model, echo: false });
+  assert.equal(slice.result.ok, true, JSON.stringify(slice.result));
+  // With no label the sandbox is named by the time.
+  assert.match(slice.id, new RegExp(`^${SOURCE_JOB}~\\d{8}T\\d{6}$`));
+  const lines = statusLines(path.join(config.output, slice.id)).filter((line) => line.job === slice.id);
+  assert.deepEqual(lines.filter((line) => line.event === 'pass').map((line) => line.phase),
+    ['phase9-senior', 'phase9-confidence']);
+  assert.ok(!fs.existsSync(path.join(config.output, slice.id, 'work', 'checkpoints', 'phase9-revalidate.json')));
+  // Its checkpoint is where the slice ended, so a slice of the sandbox carries on from there.
+  assert.equal(readCheckpoint(path.join(config.output, slice.id)).phase, 'phase9-confidence');
+  assert.equal(readCheckpoint(result.outDir).phase, 'phase10');
+  const next = await rerunJob(config, { job: slice.id, from: 'phase9-revalidate', label: 'next' },
+    { model, echo: false });
+  assert.equal(next.result.ok, true, JSON.stringify(next.result));
+  assert.equal(next.id, `${slice.id}~next`);
+});
+
+test('a slice from a phase whose earlier snapshot is missing stops and names it, writing nothing', async () => {
+  const { config, result } = await finishedJob();
+  fs.rmSync(path.join(result.outDir, 'work', 'checkpoints', 'phase9-checklist.json'));
+  const before = digest(result.outDir);
+  await assert.rejects(() => rerunJob(config, { job: SOURCE_JOB, from: 'phase9-senior', label: 'gap' },
+    { echo: false }), /issue-501-change-7001 has no snapshot for phase9-checklist \(work\/checkpoints\/phase9-checklist\.json\)/);
+  assert.equal(fs.existsSync(path.join(config.output, `${SOURCE_JOB}~gap`)), false);
+  assert.deepEqual(digest(result.outDir), before);
+  assert.equal(lockHeld(config), false);
+});
+
+test('a slice refuses a job with no folder, a label already used, a phase that does not exist and a range backwards', async () => {
+  const { config } = await finishedJob();
+  const run = async () => { throw new Error('must not run'); };
+  const attempt = (job) => rerunJob(config, job, { run });
+  await assert.rejects(() => attempt({ job: 'issue-9-change-1', from: 'phase3' }), /has no output folder/);
+  await assert.rejects(() => attempt({ job: SOURCE_JOB, from: 'phase99' }), /--from takes one of: intake, phase1/);
+  await assert.rejects(() => attempt({ job: SOURCE_JOB, from: 'phase3', until: 'phase99' }), /--until takes one of/);
+  await assert.rejects(() => attempt({ job: SOURCE_JOB, from: 'phase5', until: 'phase3' }), /--from comes after --until/);
+  await assert.rejects(() => attempt({ job: SOURCE_JOB, from: 'phase3', label: 'a/b' }), /--as takes/);
+  await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'used' }, { run: async () => ({ ok: true }) });
+  await assert.rejects(() => attempt({ job: SOURCE_JOB, from: 'phase9-revalidate', label: 'used' }),
+    /already exists; give another --as label/);
+});
+
+test('a slice from intake needs no snapshot and starts the job over in the sandbox', async () => {
+  const { config, model, result } = await finishedJob();
+  fs.rmSync(path.join(result.outDir, 'work', 'checkpoints'), { recursive: true });
+  const slice = await rerunJob(config, { job: SOURCE_JOB, from: 'intake', until: 'phase1', label: 'fresh' },
+    { model, echo: false });
+  assert.equal(slice.result.ok, true, JSON.stringify(slice.result));
+  const lines = statusLines(path.join(config.output, slice.id));
+  assert.deepEqual(lines.filter((line) => line.event === 'pass').map((line) => line.phase), ['intake', 'phase1']);
+  assert.equal(lines.at(-1).event, 'slice');
+  // The sandbox's log is its own: nothing of the job's earlier run is in it.
+  assert.ok(!lines.some((line) => line.event === 'resume' || line.phase === 'phase2'));
+});
+
+test('a slice holds the queue while it runs, leaves a held queue alone, and starts units again only if it stopped them', async () => {
+  const { config } = await finishedJob();
+  const seen = [];
+  const run = async (_config, job, options) => {
+    seen.push({ held: lockHeld(config), job, until: options.until });
+    return { ok: true };
+  };
+  await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'one' }, { run });
+  // The job's options come from its queue row, and the sandbox is resumed from the snapshot.
+  assert.deepEqual(seen, [{ held: true, until: 'phase9-revalidate',
+    job: { issue: '501', change: '7001', id: `${SOURCE_JOB}~one`, resume: true } }]);
+  assert.equal(lockHeld(config), false);
+
+  const lock = `${config.at(config.queue.file)}.lock`;
+  fs.writeFileSync(lock, String(process.pid));
+  assert.deepEqual(await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'two' },
+    { run: async () => { throw new Error('must not run'); } }), { busy: true });
+  assert.equal(fs.existsSync(path.join(config.output, `${SOURCE_JOB}~two`)), false);
+  fs.rmSync(lock);
+
+  const calls = [];
+  const pauser = { pause: async () => calls.push('pause'), resume: async () => calls.push('resume') };
+  await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'three', pauser }, { run });
+  assert.deepEqual(calls, ['pause', 'resume']);
+  calls.length = 0;
+  await assert.rejects(() => rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'four', pauser },
+    { run: async () => { throw new Error('model down'); } }), /model down/);
+  assert.deepEqual(calls, ['pause', 'resume']);
+  assert.equal(lockHeld(config), false);
+  // A run that threw before it wrote a line leaves the job's copied lines behind; the sandbox still reads as failed
+  // and lists none of the phases the job passed.
+  assert.equal(jobStatus(config, `${SOURCE_JOB}~four`)[0], `${SOURCE_JOB}~four  failed  queue free`);
+  assert.ok(!jobStatus(config, `${SOURCE_JOB}~four`).some((line) => line.startsWith('done phase=')));
+});
+
+test('a slice takes its job options from the queue row, else from the job ID, and a sandbox of a sandbox finds the same row', async () => {
+  const { config } = await finishedJob();
+  const queue = readQueue(config);
+  Object.assign(queue.jobs[0], { docs: ['docs/LIB/UC01-Card-Renewal.md'], allowDerivedRules: true, status: 'passed',
+    workbook: 'x.xlsx', phase: 'done' });
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify(queue));
+  const seen = [];
+  const run = async (_config, job) => { seen.push(job); return { ok: true }; };
+  const slice = (job, label) => rerunJob(config, { job, from: 'phase9-revalidate', label }, { run });
+  await slice(SOURCE_JOB, 'a');
+  assert.deepEqual(seen[0], { issue: '501', change: '7001', docs: ['docs/LIB/UC01-Card-Renewal.md'],
+    allowDerivedRules: true, id: `${SOURCE_JOB}~a`, resume: true });
+  // A slice of a sandbox reads the folder of the sandbox and the row of the job.
+  fs.cpSync(path.join(config.output, SOURCE_JOB), path.join(config.output, `${SOURCE_JOB}~a`), { recursive: true });
+  await slice(`${SOURCE_JOB}~a`, 'b');
+  assert.equal(seen[1].id, `${SOURCE_JOB}~a~b`);
+  assert.equal(seen[1].allowDerivedRules, true);
+  // A job with no row, as one run by hand has, is read from its ID.
+  fs.writeFileSync(config.at(config.queue.file), JSON.stringify({ jobs: [] }));
+  await slice(SOURCE_JOB, 'c');
+  assert.deepEqual(seen[2], { issue: '501', change: '7001', id: `${SOURCE_JOB}~c`, resume: true });
+  fs.cpSync(path.join(config.output, SOURCE_JOB), path.join(config.output, 'suite-LIB'), { recursive: true });
+  await slice('suite-LIB', 'd');
+  assert.deepEqual(seen[3], { suite: 'LIB', id: 'suite-LIB~d', resume: true });
+});
+
+test('queue status reads a sandbox that failed from its own log, not the job\'s lines before the slice', async () => {
+  const { config } = await finishedJob();
+  const failing = async (_config, job) => {
+    const logs = jobLogs(path.join(config.output, job.id), { echo: false });
+    logs.status({ job: job.id, phase: 'phase9-revalidate', event: 'resume', after: 'phase9-confidence' });
+    logs.status({ job: job.id, phase: 'phase9-revalidate', event: 'start' });
+    logs.status({ job: job.id, phase: 'phase9-revalidate', event: 'fail', reason: 'gate:revalidation-failed', ms: 5 });
+    return { ok: false, phase: 'phase9-revalidate' };
+  };
+  const slice = await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'bad' }, { run: failing });
+  assert.equal(slice.result.ok, false);
+  assert.deepEqual(slice.lines, []);
+  const status = jobStatus(config, slice.id);
+  assert.equal(status[0], `${slice.id}  failed  queue free`);
+  assert.ok(status.includes('stopped phase=phase9-revalidate reason=gate:revalidation-failed'), status.join('\n'));
+  // The source job's phases, copied into the sandbox's log, are not the slice's.
+  assert.ok(!status.some((line) => line.startsWith('done phase=phase1 ')), status.join('\n'));
+  assert.deepEqual(jobStatus(config, 'issue-9-change-1~nothing'), ['issue-9-change-1~nothing  not queued  queue free']);
+  // A stop on request reads stopped, as a queue row does.
+  const cancelled = async (_config, job) => {
+    jobLogs(path.join(config.output, job.id), { echo: false })
+      .status({ job: job.id, phase: 'phase9-revalidate', event: 'fail', reason: 'cancelled', ms: 5 });
+    return { ok: false, phase: 'phase9-revalidate', reason: 'cancelled' };
+  };
+  const stop = await rerunJob(config, { job: SOURCE_JOB, from: 'phase9-revalidate', label: 'stop' }, { run: cancelled });
+  assert.equal(jobStatus(config, stop.id)[0], `${stop.id}  stopped  queue free`);
+});
+
+test('a slice\'s summary lists what changed against the job\'s snapshot, with counts and codes only', () => {
+  const { config } = lib();
+  const snapshot = (job, pack) => {
+    const folder = path.join(config.output, job, 'work', 'checkpoints');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'phase9-revalidate.json'),
+      JSON.stringify({ phase: 'phase9-revalidate', state: { pack } }));
+  };
+  snapshot('src', { testCards: [{ id: 'TC-A-001' }, { id: 'TC-A-002' }, { id: 'TC-A-003' }],
+    coverage: [{ status: 'Covered' }, { status: 'Covered' }, { status: 'Missing' }], confidence: { overall: 'High' } });
+  snapshot('sbx', { testCards: [{ id: 'TC-A-001' }, { id: 'TC-A-002' }, { id: 'TC-A-004' }, { id: 'TC-A-005' }],
+    coverage: [{ status: 'Covered' }, { status: 'Partially Covered' }, { status: 'Covered' }],
+    confidence: { overall: 'Low' }, revalidation: { passed: false, remaining: ['Item one', 'Item two'] } });
+  const { lines, detail } = compareSnapshots(path.join(config.output, 'src'), path.join(config.output, 'sbx'),
+    'phase9-revalidate');
+  assert.deepEqual(lines, [
+    'cards  source 3  sandbox 4  added 2  removed 1',
+    'coverage  Missing 1 -> 0  Partially Covered 0 -> 1',
+    'confidence  High -> Low',
+    'revalidation  open 0 -> 2',
+  ]);
+  // The card IDs and the open items stay out of the console lines.
+  assert.deepEqual(detail, { phase: 'phase9-revalidate', cardsAdded: ['TC-A-004', 'TC-A-005'],
+    cardsRemoved: ['TC-A-003'], openBefore: [], openAfter: ['Item one', 'Item two'] });
+  assert.ok(!lines.join('\n').includes('TC-A') && !lines.join('\n').includes('Item'));
+  assert.deepEqual(compareSnapshots(path.join(config.output, 'src'), path.join(config.output, 'sbx'), 'phase10').lines,
+    ['sandbox has no snapshot at phase10; nothing to compare']);
+  fs.rmSync(path.join(config.output, 'src', 'work'), { recursive: true });
+  assert.deepEqual(compareSnapshots(path.join(config.output, 'src'), path.join(config.output, 'sbx'),
+    'phase9-revalidate').lines, ['source has no snapshot at phase9-revalidate; nothing to compare']);
+});
+
+test('the command line runs a slice, and refuses slice options without --job and job options with it', async () => {
+  const { config, result } = await finishedJob();
+  const cli = (...args) => spawnSync(process.execPath, [path.join(HERE, 'build-pack.mjs'), 'run', ...args,
+    '--config', config.file], { encoding: 'utf8' });
+  assert.deepEqual(parseArgs(['run', '--job', 'x', '--from', 'p', '--until', 'q', '--as', 'l', '--pause']),
+    { docs: [], words: ['run'], job: 'x', from: 'p', until: 'q', as: 'l', pause: true });
+  const sliceOnly = cli('--issue', '501', '--from', 'phase3');
+  assert.equal(sliceOnly.status, 2);
+  assert.match(sliceOnly.stderr, /--from goes with --job/);
+  const both = cli('--job', SOURCE_JOB, '--issue', '501', '--from', 'phase3');
+  assert.equal(both.status, 2);
+  assert.match(both.stderr, /--job names the job/);
+  assert.match(cli('--job', SOURCE_JOB).stderr, /--from takes a phase/);
+  assert.match(cli('--job', '../x', '--from', 'phase3').stderr, /--job takes a job ID/);
+  const gone = cli('--job', 'issue-9-change-1', '--from', 'phase3');
+  assert.equal(gone.status, 2);
+  assert.match(gone.stderr, /issue-9-change-1 has no output folder/);
+  // A queue held by a live process makes the slice wait for another try, and writes nothing.
+  const lock = `${config.at(config.queue.file)}.lock`;
+  fs.writeFileSync(lock, String(process.pid));
+  const busy = cli('--job', SOURCE_JOB, '--from', 'phase9-senior', '--as', 'cli');
+  fs.rmSync(lock);
+  assert.equal(busy.status, 1);
+  assert.match(busy.stderr, /the queue is running/);
+  assert.equal(fs.existsSync(path.join(config.output, `${SOURCE_JOB}~cli`)), false);
+  assert.ok(fs.existsSync(result.workbook));
 });
