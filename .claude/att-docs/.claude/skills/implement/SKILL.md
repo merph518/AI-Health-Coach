@@ -23,6 +23,17 @@ ownership unit when reading the board. The worktree (Section 3), the non-draft p
 request, the self review loop, and the `Manual Review Needed` label (Section 7) hold for
 every pull request.
 
+In this repository `/implement` is this full pull-request procedure: it builds code
+changes with the `tdd` skill (see Test seams) and reviews every change with the
+`code-review` skill (Section 7, Self review).
+
+Exception to the non-draft rule above and the general skill's non-draft rule: a pull
+request opened by the `implement-spec` skill (a user-scope skill that builds a whole
+spec's issues on one integration branch) may stay a draft while its issues land. Its own
+step 8 does not mark it ready: once its `code-review` pass ends, it goes through the
+Section 7 self review loop, checks and the `Manual Review Needed` label, and Section 7
+marks it ready. Its body has one `Closes #<N>` line per issue it closes.
+
 ## Base
 
 Read [the general skill](../../../plugins/general/skills/implement/SKILL.md), which lives in this repository rather than in a vendored copy, first and follow it, except where this file overrides it.
@@ -45,61 +56,60 @@ reply text: the user does not see it there.**
 | `<ownership-unit>` | The folder the issue names: `plugins/<group>/skills/<name>/`, `plugins/<group>/hooks/`, or a root file |
 | `<ownership-rules>` | Under Overrides, Section 3 |
 | `<main-checkout>` | `~/Code/Overmind`, read-only |
-| `<worktree-script>` | The `EnterWorktree` tool, under Overrides, Section 3 |
-| `<edit-guard>` | The harness worktree guard, under Overrides, Section 3 |
+| `<worktree-script>` | `EnterWorktree` when available; otherwise the Git fallback under Overrides, Section 3 |
+| `<edit-guard>` | The harness worktree guard when available; isolation is required without it, under Overrides, Section 3 |
 | `<dependency-setup>` | `package.json` needs only `dotenv`. There is no lockfile, so run `npm install` in the worktree when a test imports it. `node_modules` is gitignored |
 | `<shell-text-note>` | Under Overrides, Section 3 |
 | `<branch-types>` | `feat`, `fix`, `chore`, `docs`, `ci` |
 | `<default-branch>` | `main`. Never merge, except a pin-only pull request under Added gates, Post-merge pin; never push to `main`, never force-push |
 | `<follow-up-note>` | `gh issue create` in `merph518/Overmind`. When a write is refused, put the text in the pull request body under `Follow-ups` |
 | `<sampling-note>` | Not applicable here, because nothing is dispatched; Section 6 below runs every affected test file |
-| `<discovery-rules>` | Not applicable here, because there is no test data discovery |
-| `<schema-source>` | Not applicable here, because there is no database schema to confirm |
-| `<project-exclusion>` | Not applicable here, because there are no test projects |
 | `<writing-rules>` | `repo-writing`, under Added gates |
 | `<repo-constraints>` | None beyond the writing rules and the README rule under Repository notes |
-| `<test-accounts>` | Not applicable here, because there are no test accounts |
 | `<static-checks>` | Local checks, under Overrides, Section 5 |
 | `<pr-checks>` | The `test-all` job in `.github/workflows/ci.yml` runs every test and the static checks on a pull request and again on each push to its branch. The ready signal waits for it, under Overrides, Section 7, Ready signal. This replaces the general skill's wording that a pull request check runs static checks only: the local runs in Section 6 still go green before the pull request opens |
 | `<test-dispatch>` | Not applicable here, because nothing is dispatched. Tests run locally, under Overrides, Section 6 |
-| `<test-run-rules>` | Not applicable here, because there are no test families or run counts |
-| `<shared-env>` | Not applicable here, because there is no shared test environment |
 | `<branch-age-note>` | Before opening the pull request and before marking it ready, merge `origin/main` into the branch when it is behind. Never rebase, and never force-push |
 | `<run-watch>` | No run watcher, because nothing is dispatched. After the ready signal, wait for the merge with a background command that has no command substitution: `until gh pr view <n> --json state --jq .state | grep -qvx OPEN; do sleep 120; done; gh pr view <n> --json state --jq .state`. When working under `oversee-development`, record the opened pull request on its ledger with `bash plugins/general/skills/oversee-development/oversee.sh finish <N> done <pr> "<note>"`, where `<pr>` is the pull request number. Outside it, only that wait |
-| `<baseline-rules>` | Not applicable here, because there is no baseline |
-| `<artifact-read>` | Not applicable here, because there are no run artifacts |
-| `<failure-snapshot>` | Not applicable here, because there are no failure snapshots |
-| `<deviation-note>` | Not applicable here, because there is no app under test |
-| `<deviation-records>` | Not applicable here, because there is no app under test |
 | `<fix-cycle-budget>` | Three cycles on one failure, then record it on the issue and stop |
-| `<investigation-log>` | Not applicable here, because no skill records red runs |
 | `<mergeability-note>` | Under Overrides, Section 7 |
 | `<self-review>` | Under Overrides, Section 7 |
 | `<ready-signal>` | Under Overrides, Section 7, Ready signal. A pull request reported ready carries `Manual Review Needed`, read back |
-| `<skip-ledger>` | Not applicable here, because there is no skip ledger |
 | `<instructions-file>` | `CLAUDE.md` at the root, for the rule that every pull request follows this procedure. `README.md` for the layout and the extension contract |
 | `<post-merge-checks>` | The post-merge pin, under Added gates. It runs after the merge, not before the pull request is ready |
 | `<pairing>` | None |
 | `<merge-cleanup>` | Nothing runs automatically. Removing the worktree after the merge, with `git worktree remove` from the main checkout, is the user's |
 
+Every placeholder this table does not list is not applicable here, because there is no
+app under test, runner dispatch, baseline, shared test environment, test account, schema
+source, test data discovery, skip ledger or deviation record. Overrides, Section 6 says
+what runs instead.
+
 ## Overrides
 
-### Models
+### Plan and review
 
-Each step has one model:
+Each change goes through these steps, in order:
 
-| Step | Model |
+| Step | Produces |
 | --- | --- |
-| Planning and design advice, before any code is written | Opus |
-| Writing the code and its tests | Sonnet |
-| Reviewing every change, including the last fix | Opus |
-| Fixing review findings | Sonnet |
+| Planning and design advice, before any code is written | The approach, the files to change, the test seams, and the risks |
+| Writing the code and its tests | The change, built from the plan |
+| Reviewing every change, including the last fix | A list of real findings, or none |
+| Fixing review findings | A fix that is itself reviewed |
 
-Before coding, spawn an Opus agent with the issue or task and the files it touches, and
-ask it for the plan and design advice: the approach, the files to change, and the risks.
-Sonnet implements from that advice and records in the pull request body, under Judgment
-calls, any place it departed from it. A fix for a review finding is written by Sonnet, then
-reviewed by Opus.
+Before coding, spawn an agent with the issue or task and the files it touches, and ask it
+for the plan and design advice: the approach, the files to change, the test seams, and
+the risks. Build from that plan and record in the pull request body, under Judgment
+calls, any place the code departed from it. A fix for a review finding is reviewed like
+any other change.
+
+### Test seams
+
+The plan names the test seams. This overrides the `tdd` skill's step of confirming
+seams with the user: when the code is built with `tdd`, the seams the plan names count as
+confirmed, so an unattended run does not stop to ask. A seam the plan did not name is
+asked through `AskUserQuestion` (or, in a subagent, returned in its report).
 
 ### Section 2, labels
 
@@ -146,26 +156,42 @@ a comment on the issue when the harness allows one. In a loop over issues, read 
 remove the label and take the issue up. `Blocked` here also covers an issue waiting on
 another issue or pull request in this repository.
 
-Cut the branch with the `EnterWorktree` tool, which creates `.claude/worktrees/<name>`
-from `origin/main`, then rename it: `git branch -m <type>/issue-<N>-<slug>`.
+When `EnterWorktree` is available, fetch `origin/main`, then use the tool to create
+`.claude/worktrees/<name>` from `origin/main`. Rename the branch in the worktree:
+`git branch -m <type>/issue-<N>-<slug>`.
 
-The harness worktree guard blocks a write outside the worktree. It also refuses
-`git -C`, `cd` into the main checkout, and complex shell constructs. Keep shell commands
-simple, use absolute worktree paths, and put scripts and long text (commit messages,
-pull request bodies) in files in the session's scratchpad directory.
+When `EnterWorktree` is unavailable, after the label read-back and ownership checks,
+run these commands from the main checkout:
+
+```bash
+git fetch origin main
+git worktree add -b <type>/issue-<N>-<slug> ~/Code/Overmind/.claude/worktrees/<name> origin/main
+```
+
+Run the second command only if the fetch succeeds. Use a new worktree name and branch;
+if creation fails, stop rather than reuse either. For a change without an issue, use
+`<type>/<slug>` as the branch name.
+Run the base verification in the general skill's step 3, Cut the branch, before editing.
+All subsequent file operations and commands target that worktree; the main checkout's
+files and checked-out branch stay untouched.
+
+The harness worktree guard, when available, blocks a write outside the worktree. It also
+refuses `git -C`, `cd` into the main checkout, and complex shell constructs. Keep shell
+commands simple, use absolute worktree paths, and put scripts and long text (commit
+messages, pull request bodies) in files in the session's scratchpad directory.
 
 ### Section 5, static checks
 
-These run locally on the changed files before every commit, so a push does not wait on
-CI to find what a local check would have shown:
+These run locally before every commit, so a push does not wait on CI to find what a local
+check would have shown:
 
-- Every changed JSON file parses: `python3 -m json.tool <file>`.
-- `node --check <file>` on each changed `.mjs` or `.js` file.
-- `python3 -m py_compile <file>` on each changed `.py` file.
-- `bash -n <file>` on each changed `.sh` file.
-- A changed `SKILL.md` keeps valid `name` and `description` frontmatter.
+- `python3 scripts/validate.py` checks the plugin and marketplace JSON, `SKILL.md`
+  frontmatter, relative Markdown links, and the syntax of every `.py`, `.mjs`, `.js` and
+  `.sh` file in the tree.
+- Every other changed JSON file parses: `python3 -m json.tool <file>`. `validate.py`
+  parses JSON only in the plugin and marketplace files.
 
-The final pass in step 7 runs the same list on every file the branch changed.
+The final pass in step 7 runs both, with `json.tool` on every JSON file the branch changed.
 
 ### Section 6, running the affected tests
 
@@ -194,10 +220,14 @@ A diff with no executable code (Markdown, JSON data) runs no test; the report sa
   from `main`. The title follows the same form, and is the one commit release-please
   reads if the pull request is squash merged. Mark a breaking change to the extension
   contract with `!`.
-- The body has, in order: `Closes #<N>`, Why, What changes, Verification (the static
-  checks and each test file run with its result), Judgment calls, Pre-existing failures
-  fixed, Overlap, Self review, Settled decisions, then the attribution lines the session
-  gives.
+- The body has, in order: `Closes #<N>` (one line per issue closed), Why, What changes,
+  Verification (the static checks and each test file run with its result), Judgment
+  calls, Pre-existing failures fixed, Overlap, Self review, Settled decisions, then the
+  attribution lines the session gives.
+  The `pr` skill may be loaded when a body is written; this section's order wins. The
+  `pr` skill's Summary section goes under What changes and its before/after Evidence
+  under Verification; its Merge Danger section (Door and Blast Radius) goes under
+  Judgment calls.
 - Never merge the pull request, never push to `main`, and never force-push. The user
   merges. The one exception is a pin-only bump pull request, under Added gates, Post-merge
   pin.
@@ -205,15 +235,14 @@ A diff with no executable code (Markdown, JSON data) runs no test; the report sa
   `gh api -X PATCH repos/merph518/Overmind/pulls/<n> -F "body=@<file>"`.
 - Mergeability: `gh pr view <n> --json mergeable,mergeStateStatus`. Resolve a conflict by
   merging `origin/main` into the branch, never by rebase plus force-push.
-- Self review: Sonnet implements and fixes, and Opus reviews every change, including the
-  final fix (see Models above).
-  Spawn an Opus review agent on the diff, and run the `code-review` skill on the pull
-  request number. Fix real findings and review again, for at most three passes. The
-  fixes from the last pass still get an Opus review before the pull request is marked
-  ready; this replaces the general skill's rule that the third pass's fixes get no
-  fourth review. If that review finds another real bug, fix it, have Opus review that
-  fix, and say in the report that the loop ran past three passes. A fifth pass that
-  still finds a real bug stops the work and asks through `AskUserQuestion`.
+- Self review: every change is reviewed, including the final fix (see Plan and review
+  above). Spawn a review agent on the diff, and run the `code-review` skill with
+  `origin/<default-branch>` as its fixed point. Fix real findings and review again, for at
+  most three passes. The fixes from the last pass still get a review before the pull
+  request is marked ready; this replaces the general skill's rule that the third pass's
+  fixes get no fourth review. If that review finds another real bug, fix it, have a review
+  agent review that fix, and say in the report that the loop ran past three passes. A
+  fifth pass that still finds a real bug stops the work and asks through `AskUserQuestion`.
 - Ready signal: never leave the pull request in draft. When the loop ends, mark it ready
   with `gh pr ready <n>`. The label is added only when every check on the pull request has
   passed on the current head. A read right after a push or a merge of `origin/main` can
@@ -242,7 +271,7 @@ A diff with no executable code (Markdown, JSON data) runs no test; the report sa
   `AskUserQuestion`. Merging `origin/main` into the branch, or any push, starts the checks
   again, so the head check and the wait repeat after it.
 
-  A check that fails is a real failure to fix, then Opus reviews the fix and it is pushed
+  A check that fails is a real failure to fix, then the fix is reviewed and pushed
   like any other fix; the label stays off until the rerun passes. This holds for a docs-only
   branch too, because `test-all` runs the whole suite on every pull request: a failure
   already on `main` is fixed here, and the body's Verification reports the CI result. A
@@ -294,12 +323,14 @@ not run here. Commit messages and the pull request body are exempt.
 ### CI runners
 
 All CI in this repository, now and in the future, runs only on the owner's self-hosted
-runners: `tablet-runner-1` to `tablet-runner-4` (Linux) and `pw-ci-runner-desktop-1` to
-`pw-ci-runner-desktop-5` (Windows). All nine carry the label `overmind`, so a job's
-`runs-on` includes `self-hosted` and `overmind`; add `Linux` for a job that needs the
-tablets alone. Never use a GitHub-hosted runner (`ubuntu-latest`, `windows-latest`,
-`macos-latest` or any other), and never target `pw-windows-runner-1` or the
-`pw-linux-runner-*` machines (label `playwright`). Before adding or editing a workflow,
+runners that carry the label `overmind`: `tablet-runner-1` to `tablet-runner-4` and
+`pw-linux-runner-1` to `pw-linux-runner-6` (Linux), and `pw-ci-runner-desktop-1` to
+`pw-ci-runner-desktop-5` (Windows). A job's `runs-on` includes `self-hosted` and
+`overmind` and never names `playwright`. Add `Linux` for a job that needs a POSIX shell
+(it lands on a tablet or a Linux Playwright runner) and `Windows` for one that needs the
+desktops. Never use a GitHub-hosted runner (`ubuntu-latest`, `windows-latest`,
+`macos-latest` or any other), and never target `pw-windows-runner-1`, which carries
+`playwright` but not `overmind`. Before adding or editing a workflow,
 confirm the names and labels with
 `gh api orgs/merph518/actions/runners --jq '.runners[] | "\(.name) \(.status) \([.labels[].name] | join(","))"'`,
 and before opening the pull request run `grep -rn runs-on .github/workflows` and check
@@ -336,16 +367,38 @@ done until it finishes or is skipped.
     way, with the run's link.
   - The workflow is skipped. The tag is cut by hand, an exception to the README's rule
     that holds only while the workflow is off, and any release pull request left open is
-    ignored: ask the user through `AskUserQuestion` to cut it.
+    ignored: ask the user through `AskUserQuestion` to cut it. When the workflow runs
+    again, resync the manifest to that tag, under Releases below.
 
   After the user was asked to merge the release pull request or to cut the tag, open no
   bump pull request until the newest tag is above the one from before the merge.
+- **Update the installed plugins.** Once the newest tag is above the one from before the
+  merge, bring this machine's installed plugins to it, so the next new session lists the
+  new skills. The update changes Claude Code's plugin folder through the `claude` command,
+  not by editing files, which is the one exception to the rule below that this session
+  writes only inside its worktree. Read
+  `~/.claude/plugins/known_marketplaces.json` first.
+  - When the `att-docs` source has a `ref`, the marketplace is pinned and an update stays on
+    that tag. Run nothing, and report the README's remove, add and install commands to the
+    user, because removing the marketplace uninstalls the plugins this session runs from.
+  - Otherwise run `claude plugin marketplace update att-docs`, then
+    `claude plugin update <name>@att-docs --scope user` for `att-docs`, `general` and
+    `voice`. Add the same update with `--scope project` or `--scope local` for each plugin
+    that `~/.claude/plugins/installed_plugins.json` lists for the main checkout's path: from
+    a worktree the command reaches the main checkout's entry, and no command reaches a
+    worktree's own entry. A session in another repository with its own entries gets the
+    commands from the `voice` plugin's `SessionStart` hook, which reports an installed
+    plugin that is behind.
+  - The update applies to sessions started afterward. Report what ran and its result.
 - **Find every repository that pins Overmind.** List the owner's repositories with
   `gh repo list merph518 --no-archived --limit 100 --json name --jq '.[].name'` (raise the
   limit when it returns 100 names) and keep each one whose lock names Overmind:
   `gh api repos/merph518/<name>/contents/.claude/att-docs.lock -H "Accept: application/vnd.github.raw"`
   has a `repo=` line naming `merph518/Overmind` or an earlier location of it. A 404 means
-  the repository does not pin Overmind. Read the list fresh each time.
+  the repository does not pin Overmind. Read the list fresh each time. Compare the
+  result with `.github/consumers.json` and report drift both ways to the user: a repository
+  that pins Overmind but is missing from the file, so it can be added, and a listed
+  repository that no longer pins Overmind, so it can be removed.
 - **Open one pin-bump pull request per repository.** This session cannot write outside
   its own worktree, so each bump is handed to a session started in that repository, or to
   the user. That session runs `scripts/overmind-sync.sh <new tag>`, then
@@ -355,7 +408,7 @@ done until it finishes or is skipped.
   Releases section. Nothing pushes to a repository's `main`.
   - A bump whose diff is only the lock, `.claude/att-docs.lock`, and the vendored files
     under `.claude/att-docs/` is a pin-only pull request. It skips the self review loop,
-    the Opus review and the ready label, because the code it brings in was reviewed in
+    the review and the ready label, because the code it brings in was reviewed in
     this repository, and it merges by the next step without a confirm. The handoff says
     so, because that repository's own rules otherwise call for the full procedure.
   - A bump with any other change, such as an extension edit for a new minor version,
@@ -414,6 +467,9 @@ done until it finishes or is skipped.
 
 release-please reads conventional commits on `main`. Never bump a version, and never
 edit `.release-please-manifest.json`, `CHANGELOG.md`, or a `plugin.json` version by hand.
+The one exception is a resync: when a tag was cut by hand and the manifest is behind it,
+a `chore:` pull request sets the manifest and the three `plugin.json` versions to that
+tag. It changes no other version.
 
 ## Repository notes
 

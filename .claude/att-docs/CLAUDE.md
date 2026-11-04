@@ -14,7 +14,21 @@ steps to skip when there is no issue.
 
 Two parts are easy to miss:
 
-- The self review loop runs on every pull request, with an Opus review of every change,
+- The self review loop runs on every pull request, with a review of every change,
   including the last fix. Section 7 sets the pass limit.
 - When the loop ends, add the `Manual Review Needed` label and read it back. A pull request
   reported ready without the label is not ready.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `merph518/Overmind`, worked with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
